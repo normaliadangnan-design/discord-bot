@@ -17,15 +17,21 @@ const client = new Client({ intents });
 
 /* ========== Helpers ========== */
 const COLOR = 0x8b5cf6;
+const GREEN = 0x22c55e;
+const RED = 0xef4444;
+const YELLOW = 0xf59e0b;
 const SPEED = 300; // bilis ng animation sa milliseconds (mas mababa = mas mabilis)
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const pick = list => list[Math.floor(Math.random() * list.length)];
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const embed = (title, text) => {
-  const e = new EmbedBuilder().setColor(COLOR).setTitle(title);
+const embed = (title, text, color = COLOR) => {
+  const e = new EmbedBuilder().setColor(color).setTitle(title);
   if (text) e.setDescription(text);
   return e;
 };
+const success = (title, text) => embed(title, text, GREEN);
+const fail = text => embed('❌ Hindi Natuloy', text, RED);
+const notice = (title, text) => embed(title, text, YELLOW);
 const bar = percent => '█'.repeat(Math.round(percent / 10)) + '░'.repeat(10 - Math.round(percent / 10));
 const secret = content => ({ content, flags: MessageFlags.Ephemeral });
 
@@ -51,7 +57,7 @@ const deliver = (i, label, final, ephemeral = false) =>
   animate(i, loadingFrames(label), final, SPEED, ephemeral);
 
 // Animated na private message (error o paalala)
-const warn = (i, text) => deliver(i, 'Sinusuri', { content: text }, true);
+const warn = (i, text) => deliver(i, 'Sinusuri', fail(text), true);
 
 /* ========== Commands ========== */
 const commands = new Map();
@@ -118,14 +124,13 @@ add('serverinfo', 'Info ng server', async i => {
 });
 
 add('say', 'Magsalita ang bot', async i => {
-  await deliver(i, 'Nagta-type',
-    { content: i.options.getString('message', true), allowedMentions: { parse: [] } });
+  await deliver(i, 'Nagta-type', embed('💬 Mensahe', i.options.getString('message', true)));
 }, c => c.addStringOption(o => o.setName('message').setDescription('Sasabihin').setRequired(true).setMaxLength(2000)),
 PermissionFlagsBits.ManageMessages);
 
 add('poll', 'Gumawa ng botohan (24 oras)', async i => {
   // Hindi puwedeng idagdag ang poll sa pag-edit, kaya bagong message ito pagkatapos ng animation
-  await deliver(i, 'Ginagawa ang botohan', embed('📊 Handa na ang botohan!'));
+  await deliver(i, 'Ginagawa ang botohan', success('📊 Handa na ang botohan!', 'Nasa ibaba ang botohan.'));
   await i.followUp({
     poll: {
       question: { text: i.options.getString('tanong', true) },
@@ -218,39 +223,45 @@ add('loading', 'Animated na loading bar', async i => {
 /* ----- Moderation ----- */
 add('clear', 'Magbura ng messages', async i => {
   if (!i.appPermissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ReadMessageHistory])) {
-    return warn(i, '❌ Kailangan ko ng View Channel, Manage Messages at Read Message History.');
+    return warn(i, 'Kailangan ko ng View Channel, Manage Messages at Read Message History.');
   }
   await deliver(i, 'Naglilinis', async () => {
     const deleted = await i.channel.bulkDelete(i.options.getInteger('dami', true), true);
-    return embed('🧹 Tapos na!', `Nabura: **${deleted.size}** (hindi mabubura nang sabay ang lampas 14 na araw)`);
+    return success('🧹 Tapos na!', `Nabura: **${deleted.size}** (hindi mabubura nang sabay ang lampas 14 na araw)`);
   }, true);
 }, c => c.addIntegerOption(o => o.setName('dami').setDescription('1 hanggang 100').setRequired(true).setMinValue(1).setMaxValue(100)),
 PermissionFlagsBits.ManageMessages);
 
 // Safety check: bawal sa sarili, sa bot, at sa mas mataas o kapantay na role
-async function getTarget(i) {
+// getMember: kasama na sa command ang member, kaya walang hintay bago makasagot
+function getTarget(i) {
   const user = i.options.getUser('user', true);
-  const member = await i.guild.members.fetch(user.id).catch(() => null);
+  const member = i.options.getMember('user');
   let problem = null;
   if (!member) problem = 'Wala sa server ang user.';
   else if (user.id === i.user.id || user.id === client.user.id) problem = 'Hindi puwede sa sarili mo o sa bot.';
   else if (i.guild.ownerId !== i.user.id && member.roles.highest.comparePositionTo(i.member.roles.highest) >= 0) {
     problem = 'Mas mataas o kapantay mo ang role niya.';
   }
-  return { member, problem };
+  return { user, member, problem };
 }
 
-function addModeration(name, description, permission, check, action, extra) {
+function addModeration(name, description, permission, check, style, action, extra) {
   add(name, description, async i => {
-    const { member, problem } = await getTarget(i);
-    if (problem) return warn(i, `❌ ${problem}`);
+    const { user, member, problem } = getTarget(i);
+    if (problem) return warn(i, problem);
     if (!i.appPermissions.has(permission) || !member[check]) {
-      return warn(i, '❌ Kulang ang permission ng bot, o mas mataas ang role ng user.');
+      return warn(i, 'Kulang ang permission ng bot, o mas mataas ang role ng user.');
     }
     const reason = i.options.getString('dahilan') ?? 'Walang dahilan';
-    await deliver(i, 'Pinoproseso', async () => {
+    const avatar = user.displayAvatarURL({ size: 256 });
+    const frames = style.frames.map((title, n) =>
+      embed(title, `**${user.username}**\n\`${bar([30, 65, 95][n])}\``, style.color).setThumbnail(avatar));
+    await animate(i, frames, async () => {
       const done = await action(i, member, `${i.user.username}: ${reason}`.slice(0, 512));
-      return { content: `✅ ${done}: **${member.user.username}**\nDahilan: ${reason}`, allowedMentions: { parse: [] } };
+      return embed(`${style.icon} ${done}`,
+        `**User:** ${user.username}\n**Moderator:** ${i.user.username}\n**Dahilan:** ${reason}`, style.color)
+        .setThumbnail(avatar).setTimestamp();
     });
   }, c => {
     c.addUserOption(o => o.setName('user').setDescription('Target').setRequired(true));
@@ -260,6 +271,7 @@ function addModeration(name, description, permission, check, action, extra) {
 }
 
 addModeration('timeout', 'I-timeout ang user', PermissionFlagsBits.ModerateMembers, 'moderatable',
+  { icon: '🔇', color: YELLOW, frames: ['⏳ Inihahanda.', '⌛ Pinapatahimik..', '🔇 Tina-timeout...'] },
   async (i, member, reason) => {
     const minutes = i.options.getInteger('minuto', true);
     await member.timeout(minutes * 60_000, reason);
@@ -268,12 +280,15 @@ addModeration('timeout', 'I-timeout ang user', PermissionFlagsBits.ModerateMembe
   c => c.addIntegerOption(o => o.setName('minuto').setDescription('Ilang minuto').setRequired(true).setMinValue(1).setMaxValue(40320)));
 
 addModeration('untimeout', 'Alisin ang timeout', PermissionFlagsBits.ModerateMembers, 'moderatable',
+  { icon: '🔊', color: GREEN, frames: ['⏳ Inihahanda.', '⌛ Inaayos..', '🔊 Inaalis ang timeout...'] },
   async (i, member, reason) => { await member.timeout(null, reason); return 'Inalis ang timeout'; });
 
 addModeration('kick', 'I-kick ang user', PermissionFlagsBits.KickMembers, 'kickable',
+  { icon: '👢', color: YELLOW, frames: ['🎯 Tina-target.', '🦵 Bumubuwelo..', '👢 Kini-kick...'] },
   async (i, member, reason) => { await member.kick(reason); return 'Na-kick'; });
 
 addModeration('ban', 'I-ban ang user', PermissionFlagsBits.BanMembers, 'bannable',
+  { icon: '🔨', color: RED, frames: ['🎯 Tina-target.', '⚡ Inaangat ang ban hammer..', '🔨 Bina-ban...'] },
   async (i, member, reason) => { await member.ban({ reason }); return 'Na-ban'; });
 
 /* ----- Dagdag na commands ----- */
@@ -295,20 +310,20 @@ add('membercount', 'Bilang ng members', async i => {
 
 add('announce', 'Magpadala ng announcement dito', async i => {
   const needed = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
-  if (!i.appPermissions.has(needed)) return warn(i, '❌ Kailangan ko ng View Channel, Send Messages at Embed Links.');
+  if (!i.appPermissions.has(needed)) return warn(i, 'Kailangan ko ng View Channel, Send Messages at Embed Links.');
   await deliver(i, 'Ipinapadala', async () => {
     await i.channel.send({ embeds: [embed('📢 Announcement', i.options.getString('message', true))] });
-    return { content: '✅ Naipadala na!' };
+    return success('✅ Naipadala na!', 'Nasa channel na ang announcement.');
   }, true);
 }, c => c.addStringOption(o => o.setName('message').setDescription('Announcement').setRequired(true).setMaxLength(2000)),
 PermissionFlagsBits.ManageMessages);
 
 add('slowmode', 'Itakda ang slowmode ng channel', async i => {
-  if (!i.appPermissions.has(PermissionFlagsBits.ManageChannels)) return warn(i, '❌ Kailangan ko ng Manage Channels.');
+  if (!i.appPermissions.has(PermissionFlagsBits.ManageChannels)) return warn(i, 'Kailangan ko ng Manage Channels.');
   const seconds = i.options.getInteger('segundo', true);
   await deliver(i, 'Inaayos', async () => {
     await i.channel.setRateLimitPerUser(seconds);
-    return embed('🐢 Slowmode', seconds ? `Naka-set sa **${seconds}s**` : 'Naka-off na');
+    return success('🐢 Slowmode', seconds ? `Naka-set sa **${seconds}s**` : 'Naka-off na');
   });
 }, c => c.addIntegerOption(o => o.setName('segundo').setDescription('0 para i-off').setRequired(true).setMinValue(0).setMaxValue(21600)),
 PermissionFlagsBits.ManageChannels);
@@ -316,12 +331,14 @@ PermissionFlagsBits.ManageChannels);
 function addLock(name, description, value, message) {
   add(name, description, async i => {
     if (!i.appPermissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
-      return warn(i, '❌ Kailangan ko ng Manage Channels at Manage Roles.');
+      return warn(i, 'Kailangan ko ng Manage Channels at Manage Roles.');
     }
-    if (i.channel.type !== ChannelType.GuildText) return warn(i, '❌ Sa text channel lang ito puwede.');
+    if (i.channel.type !== ChannelType.GuildText) return warn(i, 'Sa text channel lang ito puwede.');
     await deliver(i, 'Inaayos', async () => {
+      // Kapag nag-lock, payagan muna ang bot para makapag-send pa rin ito
+      if (value === false) await i.channel.permissionOverwrites.edit(client.user, { SendMessages: true });
       await i.channel.permissionOverwrites.edit(i.guild.roles.everyone, { SendMessages: value });
-      return embed(message);
+      return success(message, `Binago ni ${i.user.username}`);
     });
   }, null, PermissionFlagsBits.ManageChannels);
 }
@@ -344,7 +361,9 @@ const safeRole = (guild, role) => Boolean(role) && role.id !== guild.id && !role
 
 // Animated na panel na may button
 async function sendPanel(channel, title, text, row) {
-  const message = await channel.send({ embeds: [embed('⏳ Inihahanda...')] });
+  const message = await channel.send({ embeds: [embed('⏳ Inihahanda.', `\`${bar(30)}\``)] });
+  await sleep(SPEED);
+  await message.edit({ embeds: [embed('✨ Inihahanda..', `\`${bar(80)}\``)] });
   await sleep(SPEED);
   await message.edit({ embeds: [embed(title, text)], components: [row] });
 }
@@ -354,18 +373,18 @@ const panelPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.S
 add('setup-verify', 'Maglagay ng verify button sa channel na ito', async i => {
   const role = i.options.getRole('role', true);
   if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageRoles])) {
-    return warn(i, '❌ Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Roles.');
+    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Roles.');
   }
   if (!safeRole(i.guild, role)) {
-    return warn(i, '❌ Hindi puwede ang role na ito. Dapat mas mababa sa role ng bot at walang admin o moderation permission.');
+    return warn(i, 'Hindi puwede ang role na ito. Dapat mas mababa sa role ng bot at walang admin o moderation permission.');
   }
   if (i.guild.ownerId !== i.user.id && role.comparePositionTo(i.member.roles.highest) >= 0) {
-    return warn(i, '❌ Dapat mas mababa ang role kaysa sa pinakamataas mong role.');
+    return warn(i, 'Dapat mas mababa ang role kaysa sa pinakamataas mong role.');
   }
   await deliver(i, 'Sine-setup', async () => {
     await sendPanel(i.channel, '✅ Verification', `Pindutin ang button para makuha ang <@&${role.id}> role.`,
       button(`verify:${role.id}`, 'Verify', ButtonStyle.Success, '✅'));
-    return { content: '✅ Naka-setup na ang verification!' };
+    return success('✅ Tapos na!', 'Naka-setup na ang verification.');
   }, true);
 }, c => c.addRoleOption(o => o.setName('role').setDescription('Role na ibibigay').setRequired(true)),
 PermissionFlagsBits.Administrator);
@@ -374,13 +393,13 @@ add('setup-ticket', 'Maglagay ng ticket button sa channel na ito', async i => {
   const staff = i.options.getRole('staff', true);
   const category = i.options.getChannel('category');
   if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageChannels])) {
-    return warn(i, '❌ Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Channels.');
+    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Channels.');
   }
-  if (staff.id === i.guild.id) return warn(i, '❌ Hindi puwedeng @everyone ang staff role.');
+  if (staff.id === i.guild.id) return warn(i, 'Hindi puwedeng @everyone ang staff role.');
   await deliver(i, 'Sine-setup', async () => {
     await sendPanel(i.channel, '🎫 Support Ticket', 'Kailangan ng tulong? Pindutin ang button para magbukas ng ticket.',
       button(`ticket_open:${staff.id}:${category?.id ?? i.channel.parentId ?? '0'}`, 'Open Ticket', ButtonStyle.Primary, '🎫'));
-    return { content: '✅ Naka-setup na ang ticket system!' };
+    return success('✅ Tapos na!', 'Naka-setup na ang ticket system.');
   }, true);
 }, c => c
   .addRoleOption(o => o.setName('staff').setDescription('Role na sasagot sa tickets').setRequired(true))
@@ -391,22 +410,30 @@ const openingTicket = new Set(); // iwas dobleng ticket kapag sunod-sunod ang pi
 const closingTicket = new Set();
 
 async function handleVerify(i, roleId) {
-  await deliver(i, 'Vine-verify', async () => {
+  const frames = ['🔍 Sinusuri ang account.', '🛡️ Vine-verify..', '🔑 Ibinibigay ang role...']
+    .map((title, n) => embed(title, `\`${bar([30, 65, 95][n])}\``));
+  await animate(i, frames, async () => {
     const role = await i.guild.roles.fetch(roleId);
-    if (!safeRole(i.guild, role)) return { content: '❌ Hindi maibigay ang role. Sabihan ang admin.' };
-    if (i.member.roles.cache.has(role.id)) return { content: 'ℹ️ Verified ka na!' };
+    if (!safeRole(i.guild, role)) return fail('Hindi maibigay ang role. Sabihan ang admin.');
+    if (i.member.roles.cache.has(role.id)) return notice('ℹ️ Verified ka na!', 'Nasa iyo na ang role.');
     await i.member.roles.add(role, 'Verify button');
-    return embed('🎉 Verified!', `Nakuha mo na ang <@&${role.id}> role.`);
-  }, true);
+    return success('🎉 Verified!', `Nakuha mo na ang <@&${role.id}> role.`);
+  }, SPEED, true);
 }
 
 async function createTicket(i, staffId, categoryId) {
   const channels = await i.guild.channels.fetch();
   const existing = channels.find(c => c?.topic?.startsWith(`ticket:${i.user.id}:`));
-  if (existing) return { content: `ℹ️ May bukas ka pang ticket: <#${existing.id}>` };
+  if (existing) return notice('ℹ️ May bukas ka pang ticket', `Pumunta sa <#${existing.id}>`);
 
   const staff = await i.guild.roles.fetch(staffId);
-  if (!staff) return { content: '❌ Wala na ang staff role. Ipa-setup ulit sa admin.' };
+  if (!staff) return fail('Wala na ang staff role. Ipa-setup ulit sa admin.');
+
+  // Dapat nasa bot ang lahat ng permission na ibibigay nito sa ticket channel
+  const needed = ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'EmbedLinks', 'ManageChannels'];
+  if (!i.guild.members.me.permissions.has(needed.map(name => PermissionFlagsBits[name]))) {
+    return fail('Kulang ang permission ng bot. Kailangan: View Channels, Send Messages, Read Message History, Embed Links at Manage Channels.');
+  }
 
   const member = [
     PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
@@ -423,17 +450,30 @@ async function createTicket(i, staffId, categoryId) {
       { id: client.user.id, allow: [...member, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ManageChannels] }
     ]
   });
-  await channel.send({
-    content: `<@${i.user.id}> <@&${staffId}>`,
-    embeds: [embed('🎫 Bukas na ang Ticket', 'Ilagay dito ang concern mo. Hintayin ang staff.')],
-    components: [button('ticket_close', 'Close Ticket', ButtonStyle.Danger, '🔒')],
-    allowedMentions: { users: [i.user.id], roles: [staffId] }
-  });
-  return embed('✅ Nagawa ang ticket!', `Pumunta sa <#${channel.id}>`);
+  try {
+    // Nasa content ang mention dahil hindi nagpi-ping ang mention sa loob ng embed
+    const message = await channel.send({
+      content: `<@${i.user.id}> <@&${staffId}>`,
+      embeds: [embed('⏳ Binubuksan ang ticket.', `\`${bar(30)}\``)],
+      allowedMentions: { users: [i.user.id], roles: [staffId] }
+    });
+    await sleep(SPEED);
+    await message.edit({ embeds: [embed('✨ Binubuksan ang ticket..', `\`${bar(80)}\``)] });
+    await sleep(SPEED);
+    await message.edit({
+      embeds: [success('🎫 Bukas na ang Ticket', 'Ilagay dito ang concern mo. Hintayin ang staff.')],
+      components: [button('ticket_close', 'Close Ticket', ButtonStyle.Danger, '🔒')]
+    });
+  } catch (err) {
+    // Burahin ang kalahating ticket para makapagbukas ulit ang user
+    await channel.delete('Pumalya ang pag-setup ng ticket').catch(console.error);
+    throw err;
+  }
+  return success('✅ Nagawa ang ticket!', `Pumunta sa <#${channel.id}>`);
 }
 
 async function handleTicketOpen(i, staffId, categoryId) {
-  if (openingTicket.has(i.user.id)) return warn(i, '⏳ Ginagawa pa ang ticket mo.');
+  if (openingTicket.has(i.user.id)) return warn(i, 'Ginagawa pa ang ticket mo.');
   openingTicket.add(i.user.id);
   try {
     await deliver(i, 'Gumagawa ng ticket', () => createTicket(i, staffId, categoryId), true);
@@ -451,20 +491,20 @@ function ticketAccess(i) {
 }
 
 async function handleTicketClose(i) {
-  if (!ticketAccess(i)) return warn(i, '❌ Hindi mo puwedeng isara ang ticket na ito.');
+  if (!ticketAccess(i)) return warn(i, 'Hindi mo puwedeng isara ang ticket na ito.');
   await deliver(i, 'Sandali', {
-    content: '⚠️ Sigurado ka? Mabubura ang channel at lahat ng messages dito.',
+    embeds: [notice('⚠️ Sigurado ka?', 'Mabubura ang channel at lahat ng messages dito.')],
     components: [button('ticket_confirm', 'Oo, isara', ButtonStyle.Danger, '🗑️')]
   }, true);
 }
 
 async function handleTicketConfirm(i) {
-  if (!ticketAccess(i)) return warn(i, '❌ Hindi mo puwedeng isara ang ticket na ito.');
-  if (closingTicket.has(i.channelId)) return warn(i, '⏳ Isinasara na.');
+  if (!ticketAccess(i)) return warn(i, 'Hindi mo puwedeng isara ang ticket na ito.');
+  if (closingTicket.has(i.channelId)) return warn(i, 'Isinasara na.');
   closingTicket.add(i.channelId);
   try {
-    const frames = [3, 2, 1].map(n => embed('🔒 Isinasara ang ticket', `# ${n}`));
-    await animate(i, frames, embed('👋 Paalam!'), 1000);
+    const frames = [3, 2, 1].map(n => embed('🔒 Isinasara ang ticket', `# ${n}`, RED));
+    await animate(i, frames, embed('👋 Paalam!', 'Binubura na ang channel.', RED), 1000);
     await i.channel.delete(`Isinara ni ${i.user.username}`);
   } finally {
     closingTicket.delete(i.channelId);
@@ -477,6 +517,7 @@ function handleButton(i) {
   if (action === 'ticket_open') return handleTicketOpen(i, a, b);
   if (action === 'ticket_close') return handleTicketClose(i);
   if (action === 'ticket_confirm') return handleTicketConfirm(i);
+  return warn(i, 'Luma na ang button na ito. Ipa-setup ulit sa admin.');
 }
 
 /* ========== Animated status ========== */
@@ -517,16 +558,24 @@ client.on(Events.InteractionCreate, async i => {
     if (!command) return;
     // Dobleng check ng permission ng gumagamit
     if (command.permission && !i.memberPermissions.has(command.permission)) {
-      return await warn(i, '❌ Wala kang permission para dito.');
+      return await warn(i, 'Wala kang permission para dito.');
     }
     await command.run(i);
   } catch (err) {
     console.error(`Error sa ${label}:`, err);
-    // Palitan ang loading message para hindi ito maiwang nakabitin
-    const send = i.replied || i.deferred
-      ? i.editReply({ content: '❌ May error. Tingnan ang permissions ng bot.', embeds: [], components: [] })
-      : i.reply(secret('❌ May error.'));
-    await send.catch(console.error);
+    // Animated din ang error, at pinapalitan ang loading message
+    try {
+      const error = fail('May error. Tingnan ang permissions ng bot.');
+      if (i.replied || i.deferred) {
+        await i.editReply({ content: '', embeds: [notice('⚠️ May problema...', 'Sandali lang.')], components: [] });
+        await sleep(SPEED);
+        await i.editReply({ embeds: [error] });
+      } else {
+        await deliver(i, 'Sinusuri', error, true);
+      }
+    } catch (replyError) {
+      console.error('Hindi maipakita ang error:', replyError.message);
+    }
   }
 });
 
@@ -549,6 +598,7 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 client.on(Events.Error, err => console.error('Client error:', err));
+process.on('unhandledRejection', err => console.error('Unhandled error:', err));
 
 client.login(DISCORD_TOKEN).catch(err => {
   console.error('Hindi maka-login:', err.message);
