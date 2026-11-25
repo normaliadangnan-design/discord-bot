@@ -28,15 +28,28 @@ const bar = percent => '█'.repeat(Math.round(percent / 10)) + '░'.repeat(10 
 const secret = content => ({ content, flags: MessageFlags.Ephemeral });
 
 // Animation: ine-edit ang isang message nang paisa-isang frame
-async function animate(i, frames, final, delay = 900) {
-  await i.reply({ embeds: [frames[0]] });
+// Ang "final" ay puwedeng embed, message object, o function na gumagawa ng alinman doon
+async function animate(i, frames, final, delay = 900, ephemeral = false) {
+  const first = { embeds: [frames[0]] };
+  if (ephemeral) first.flags = MessageFlags.Ephemeral;
+  await i.reply(first);
   for (const frame of frames.slice(1)) {
     await sleep(delay);
     await i.editReply({ embeds: [frame] });
   }
   await sleep(delay);
-  await i.editReply({ embeds: [final] });
+  const result = typeof final === 'function' ? await final() : final;
+  await i.editReply(result instanceof EmbedBuilder ? { embeds: [result] } : { embeds: [], ...result });
 }
+
+// Standard na loading animation para sa ibang commands
+const loadingFrames = label => [20, 60, 100].map((p, n) =>
+  embed(`${['⏳', '⌛', '✨'][n]} ${label}${'.'.repeat(n + 1)}`, `\`${bar(p)}\` ${p}%`));
+const deliver = (i, label, final, ephemeral = false) =>
+  animate(i, loadingFrames(label), final, 600, ephemeral);
+
+// Animated na private message (error o paalala)
+const warn = (i, text) => deliver(i, 'Sinusuri', { content: text }, true);
 
 /* ========== Commands ========== */
 const commands = new Map();
@@ -54,7 +67,7 @@ function add(name, description, run, build, permission) {
 /* ----- General ----- */
 add('help', 'Listahan ng commands', async i => {
   const list = [...commands.values()].map(c => `\`/${c.data.name}\` - ${c.data.description}`);
-  await i.reply({ embeds: [embed('📖 Mga Command', list.join('\n'))], flags: MessageFlags.Ephemeral });
+  await deliver(i, 'Binubuksan ang menu', embed('📖 Mga Command', list.join('\n')), true);
 });
 
 add('ping', 'Tingnan ang bilis ng bot', async i => {
@@ -66,44 +79,52 @@ add('ping', 'Tingnan ang bilis ng bot', async i => {
 
 add('uptime', 'Gaano na katagal online ang bot', async i => {
   const since = Math.floor((Date.now() - client.uptime) / 1000);
-  await i.reply(`⏱️ Online mula <t:${since}:R>`);
+  await deliver(i, 'Kinukuha ang uptime', embed('⏱️ Uptime', `Online mula <t:${since}:R>`));
 });
 
 add('avatar', 'Ipakita ang avatar', async i => {
   const user = i.options.getUser('user') ?? i.user;
-  await i.reply({ embeds: [embed(`🖼️ Avatar ni ${user.username}`).setImage(user.displayAvatarURL({ size: 1024 }))] });
+  await deliver(i, 'Kinukuha ang avatar',
+    embed(`🖼️ Avatar ni ${user.username}`).setImage(user.displayAvatarURL({ size: 1024 })));
 }, c => c.addUserOption(o => o.setName('user').setDescription('Kaninong avatar')));
 
 add('userinfo', 'Info ng isang user', async i => {
   const user = i.options.getUser('user') ?? i.user;
-  const member = await i.guild.members.fetch(user.id).catch(() => null);
-  const lines = [
-    `**Username:** ${user.username}`,
-    `**ID:** ${user.id}`,
-    `**Account ginawa:** <t:${Math.floor(user.createdTimestamp / 1000)}:D>`
-  ];
-  if (member?.joinedTimestamp) lines.push(`**Sumali sa server:** <t:${Math.floor(member.joinedTimestamp / 1000)}:D>`);
-  await i.reply({ embeds: [embed('👤 User Info', lines.join('\n')).setThumbnail(user.displayAvatarURL())] });
+  await deliver(i, 'Hinahanap ang user', async () => {
+    const member = await i.guild.members.fetch(user.id).catch(() => null);
+    const lines = [
+      `**Username:** ${user.username}`,
+      `**ID:** ${user.id}`,
+      `**Account ginawa:** <t:${Math.floor(user.createdTimestamp / 1000)}:D>`
+    ];
+    if (member?.joinedTimestamp) lines.push(`**Sumali sa server:** <t:${Math.floor(member.joinedTimestamp / 1000)}:D>`);
+    return embed('👤 User Info', lines.join('\n')).setThumbnail(user.displayAvatarURL());
+  });
 }, c => c.addUserOption(o => o.setName('user').setDescription('Sinong user')));
 
 add('serverinfo', 'Info ng server', async i => {
-  const g = await client.guilds.fetch({ guild: i.guildId, force: true });
-  const e = embed(`🏠 ${g.name}`, [
-    `**Members:** ${g.approximateMemberCount ?? g.memberCount}`,
-    `**Ginawa:** <t:${Math.floor(g.createdTimestamp / 1000)}:D>`,
-    `**Boosts:** ${g.premiumSubscriptionCount ?? 0}`
-  ].join('\n'));
-  if (g.iconURL()) e.setThumbnail(g.iconURL({ size: 256 }));
-  await i.reply({ embeds: [e] });
+  await deliver(i, 'Kinukuha ang server info', async () => {
+    const g = await client.guilds.fetch({ guild: i.guildId, force: true });
+    const e = embed(`🏠 ${g.name}`, [
+      `**Members:** ${g.approximateMemberCount ?? g.memberCount}`,
+      `**Ginawa:** <t:${Math.floor(g.createdTimestamp / 1000)}:D>`,
+      `**Boosts:** ${g.premiumSubscriptionCount ?? 0}`
+    ].join('\n'));
+    if (g.iconURL()) e.setThumbnail(g.iconURL({ size: 256 }));
+    return e;
+  });
 });
 
 add('say', 'Magsalita ang bot', async i => {
-  await i.reply({ content: i.options.getString('message', true), allowedMentions: { parse: [] } });
+  await deliver(i, 'Nagta-type',
+    { content: i.options.getString('message', true), allowedMentions: { parse: [] } });
 }, c => c.addStringOption(o => o.setName('message').setDescription('Sasabihin').setRequired(true).setMaxLength(2000)),
 PermissionFlagsBits.ManageMessages);
 
 add('poll', 'Gumawa ng botohan (24 oras)', async i => {
-  await i.reply({
+  // Hindi puwedeng idagdag ang poll sa pag-edit, kaya bagong message ito pagkatapos ng animation
+  await deliver(i, 'Ginagawa ang botohan', embed('📊 Handa na ang botohan!'));
+  await i.followUp({
     poll: {
       question: { text: i.options.getString('tanong', true) },
       answers: ['a', 'b'].map(k => ({ text: i.options.getString(k, true) })),
@@ -175,7 +196,7 @@ add('love', 'Love meter ng dalawang user (katuwaan lang)', async i => {
 
 add('choose', 'Pipili ang bot para sa iyo', async i => {
   const options = i.options.getString('choices', true).split(',').map(s => s.trim()).filter(Boolean);
-  if (options.length < 2) return i.reply(secret('Maglagay ng 2 o higit pa, paghiwalayin ng kuwit.'));
+  if (options.length < 2) return warn(i, 'Maglagay ng 2 o higit pa, paghiwalayin ng kuwit.');
   await animate(i,
     [embed('🤔 Namimili.'), embed('🤔 Namimili..'), embed('🤔 Namimili...')],
     embed('✅ Ang pinili ko', pick(options)), 600);
@@ -195,11 +216,12 @@ add('loading', 'Animated na loading bar', async i => {
 /* ----- Moderation ----- */
 add('clear', 'Magbura ng messages', async i => {
   if (!i.appPermissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ReadMessageHistory])) {
-    return i.reply(secret('❌ Kailangan ko ng View Channel, Manage Messages at Read Message History.'));
+    return warn(i, '❌ Kailangan ko ng View Channel, Manage Messages at Read Message History.');
   }
-  await i.deferReply({ flags: MessageFlags.Ephemeral });
-  const deleted = await i.channel.bulkDelete(i.options.getInteger('dami', true), true);
-  await i.editReply(`🧹 Nabura: ${deleted.size} (hindi mabubura nang sabay ang lampas 14 na araw)`);
+  await deliver(i, 'Naglilinis', async () => {
+    const deleted = await i.channel.bulkDelete(i.options.getInteger('dami', true), true);
+    return embed('🧹 Tapos na!', `Nabura: **${deleted.size}** (hindi mabubura nang sabay ang lampas 14 na araw)`);
+  }, true);
 }, c => c.addIntegerOption(o => o.setName('dami').setDescription('1 hanggang 100').setRequired(true).setMinValue(1).setMaxValue(100)),
 PermissionFlagsBits.ManageMessages);
 
@@ -219,13 +241,15 @@ async function getTarget(i) {
 function addModeration(name, description, permission, check, action, extra) {
   add(name, description, async i => {
     const { member, problem } = await getTarget(i);
-    if (problem) return i.reply(secret(`❌ ${problem}`));
+    if (problem) return warn(i, `❌ ${problem}`);
     if (!i.appPermissions.has(permission) || !member[check]) {
-      return i.reply(secret('❌ Kulang ang permission ng bot, o mas mataas ang role ng user.'));
+      return warn(i, '❌ Kulang ang permission ng bot, o mas mataas ang role ng user.');
     }
     const reason = i.options.getString('dahilan') ?? 'Walang dahilan';
-    const done = await action(i, member, `${i.user.username}: ${reason}`.slice(0, 512));
-    await i.reply({ content: `✅ ${done}: **${member.user.username}**\nDahilan: ${reason}`, allowedMentions: { parse: [] } });
+    await deliver(i, 'Pinoproseso', async () => {
+      const done = await action(i, member, `${i.user.username}: ${reason}`.slice(0, 512));
+      return { content: `✅ ${done}: **${member.user.username}**\nDahilan: ${reason}`, allowedMentions: { parse: [] } };
+    });
   }, c => {
     c.addUserOption(o => o.setName('user').setDescription('Target').setRequired(true));
     if (extra) extra(c);
@@ -286,13 +310,15 @@ client.on(Events.InteractionCreate, async i => {
   try {
     // Dobleng check ng permission ng gumagamit
     if (command.permission && !i.memberPermissions.has(command.permission)) {
-      return await i.reply(secret('❌ Wala kang permission para dito.'));
+      return await warn(i, '❌ Wala kang permission para dito.');
     }
     await command.run(i);
   } catch (err) {
     console.error(`Error sa /${i.commandName}:`, err);
-    const msg = secret('❌ May error.');
-    const send = i.replied || i.deferred ? i.followUp(msg) : i.reply(msg);
+    // Palitan ang loading message para hindi ito maiwang nakabitin
+    const send = i.replied || i.deferred
+      ? i.editReply({ content: '❌ May error.', embeds: [] })
+      : i.reply(secret('❌ May error.'));
     await send.catch(console.error);
   }
 });
