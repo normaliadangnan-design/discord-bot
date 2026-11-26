@@ -4,7 +4,8 @@ const path = require('path');
 const {
   Client, GatewayIntentBits, Events, SlashCommandBuilder, EmbedBuilder,
   PermissionFlagsBits, MessageFlags, ActivityType, InteractionContextType,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType, AttachmentBuilder
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType, AttachmentBuilder,
+  StringSelectMenuBuilder
 } = require('discord.js');
 
 // Optional ang canvas. Kapag wala, text embed ang gagamitin imbes na larawan
@@ -910,21 +911,27 @@ const DANGEROUS = [
 const safeRole = (guild, role) => Boolean(role) && role.id !== guild.id && !role.managed && role.editable &&
   !DANGEROUS.some(flag => role.permissions.has(flag, false));
 
-// Animated na panel na may button
-async function sendPanel(channel, title, text, row) {
+// Animated na panel na may button at (optional) na larawan
+async function sendPanel(channel, title, text, row, image = {}) {
   const message = await channel.send({ embeds: [embed('⏳ Inihahanda.', `\`${bar(30)}\``)] });
   await sleep(SPEED);
   await message.edit({ embeds: [embed('✨ Inihahanda..', `\`${bar(80)}\``)] });
   await sleep(SPEED);
-  await message.edit({ embeds: [embed(title, text)], components: [row] });
+  await message.edit({
+    embeds: [applyImage(embed(title, text), image)],
+    components: [row],
+    files: image.file ? [image.file] : []
+  });
 }
 
 const panelPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
 
 add('setup-verify', 'Maglagay ng verify button sa channel na ito', async i => {
   const role = i.options.getRole('role', true);
-  if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageRoles])) {
-    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Roles.');
+  const needed = [...panelPermissions, PermissionFlagsBits.ManageRoles];
+  if (i.options.getAttachment('image')) needed.push(PermissionFlagsBits.AttachFiles);
+  if (!i.appPermissions.has(needed)) {
+    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links, Manage Roles at Attach Files (kung mag-a-upload ng larawan).');
   }
   if (!safeRole(i.guild, role)) {
     return warn(i, 'Hindi puwede ang role na ito. Dapat mas mababa sa role ng bot at walang admin o moderation permission.');
@@ -932,29 +939,183 @@ add('setup-verify', 'Maglagay ng verify button sa channel na ito', async i => {
   if (i.guild.ownerId !== i.user.id && role.comparePositionTo(i.member.roles.highest) >= 0) {
     return warn(i, 'Dapat mas mababa ang role kaysa sa pinakamataas mong role.');
   }
+  const problem = imageProblem(i);
+  if (problem) return warn(i, problem);
   await deliver(i, 'Sine-setup', async () => {
+    const image = await resolveImage(i);
     await sendPanel(i.channel, '✅ Verification', `Pindutin ang button para makuha ang <@&${role.id}> role.`,
-      button(`verify:${role.id}`, 'Verify', ButtonStyle.Success, '✅'));
+      button(`verify:${role.id}`, 'Verify', ButtonStyle.Success, '✅'), image);
     return success('✅ Tapos na!', 'Naka-setup na ang verification.');
   }, true);
-}, c => c.addRoleOption(o => o.setName('role').setDescription('Role na ibibigay').setRequired(true)),
+}, c => addImageOptions(c.addRoleOption(o => o.setName('role').setDescription('Role na ibibigay').setRequired(true))),
 PermissionFlagsBits.Administrator);
 
-add('setup-ticket', 'Maglagay ng ticket button sa channel na ito', async i => {
+/* ----- Ticket system: select menu (Apply Staff / Partnership / Support) ----- */
+const TICKET_TYPES = {
+  apply: {
+    label: 'Apply Staff', emoji: '📝', color: 0x3b82f6, short: 'apply',
+    description: 'Mag-apply na maging parte ng staff team',
+    intro: [
+      '**Sagutin ang mga ito para ma-review ang application mo:**',
+      '1️⃣ Pangalan at edad',
+      '2️⃣ Bakit mo gustong maging staff?',
+      '3️⃣ May experience ka na ba sa pag-moderate?',
+      '4️⃣ Ilang oras kang available kada araw?'
+    ]
+  },
+  partner: {
+    label: 'Partnership', emoji: '🤝', color: 0xec4899, short: 'partner',
+    description: 'Makipag-partner sa aming server',
+    intro: [
+      '**Ibigay ang detalye ng partnership:**',
+      '1️⃣ Pangalan ng server o community',
+      '2️⃣ Bilang ng members',
+      '3️⃣ Permanent na invite link',
+      '4️⃣ Ano ang ino-offer ninyo at ano ang hinihiling ninyo?'
+    ]
+  },
+  support: {
+    label: 'Support', emoji: '🛠️', color: GREEN, short: 'support',
+    description: 'Kailangan ng tulong o may problema',
+    intro: [
+      '**Ilarawan ang problema mo:**',
+      '1️⃣ Ano ang nangyari?',
+      '2️⃣ Kailan ito nagsimula?',
+      '3️⃣ Magpadala ng screenshot kung mayroon.'
+    ]
+  }
+};
+
+const ticketSelectRow = (staffId, categoryId) => new ActionRowBuilder().addComponents(
+  new StringSelectMenuBuilder()
+    .setCustomId(`ticket_select:${staffId}:${categoryId}`)
+    .setPlaceholder('🎫 Pumili ng uri ng ticket...')
+    .addOptions(Object.entries(TICKET_TYPES).map(([value, t]) => ({
+      label: t.label, value, description: t.description, emoji: { name: t.emoji }
+    }))));
+
+// Larawan (PNG, JPG, GIF, WEBP): dina-download at ina-upload ulit para hindi mag-expire ang link ng Discord CDN
+const imageCache = new Map();
+async function downloadImage(url) {
+  if (imageCache.has(url)) return imageCache.get(url);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > 8 * 1024 * 1024) throw new Error('Masyadong malaki ang larawan (max 8MB)');
+  if (imageCache.size >= 5) imageCache.delete(imageCache.keys().next().value);
+  imageCache.set(url, buffer);
+  return buffer;
+}
+const extOf = text => (String(text).match(/\.(png|jpe?g|gif|webp)(\?|$)/i)?.[1] ?? 'png').toLowerCase();
+const applyImage = (e, image = {}) => {
+  if (image.file) e.setImage(`attachment://${image.file.name}`);
+  else if (image.url) e.setImage(image.url);
+  return e;
+};
+
+// Sinusuri ang image options bago magsimula (nagbabalik ng error text o null)
+function imageProblem(i) {
+  const att = i.options.getAttachment('image');
+  const link = i.options.getString('image_url');
+  if (att && !att.contentType?.startsWith('image/')) return 'Larawan lang ang puwede sa "image" option (PNG, JPG, GIF o WEBP).';
+  if (link && !/^https:\/\/\S+$/i.test(link)) return 'Dapat nagsisimula sa https:// ang image_url.';
+  return null;
+}
+
+// Kunin ang larawan mula sa options (o sa PANEL_IMAGE_URL sa .env)
+async function resolveImage(i) {
+  const att = i.options.getAttachment('image');
+  if (att) {
+    return { file: new AttachmentBuilder(await downloadImage(att.url), { name: `panel.${extOf(att.name)}` }) };
+  }
+  const link = i.options.getString('image_url') ?? process.env.PANEL_IMAGE_URL ?? process.env.TICKET_GIF_URL ?? null;
+  return link ? { url: link } : {};
+}
+
+// function declaration (hoisted) dahil ginagamit ito ng setup-verify na nasa itaas
+function addImageOptions(c) {
+  return c
+    .addAttachmentOption(o => o.setName('image').setDescription('Larawan o GIF para sa panel (i-upload)'))
+    .addStringOption(o => o.setName('image_url').setDescription('Link ng larawan o GIF (https://...)').setMaxLength(500));
+}
+
+// Kunin ang larawan ng panel para magamit din sa loob ng ticket channel
+async function ticketImage(i) {
+  const url = i.message?.embeds?.[0]?.image?.url;
+  if (!url) return {};
+  let cdn = false;
+  let ext = 'png';
+  try {
+    const parsed = new URL(url);
+    cdn = /(^|\.)discord(app)?\.(com|net)$/.test(parsed.hostname);
+    ext = extOf(parsed.pathname);
+  } catch { /* hindi valid na URL */ }
+  if (cdn && i.guild.members.me.permissions.has(PermissionFlagsBits.AttachFiles)) {
+    try {
+      return { file: new AttachmentBuilder(await downloadImage(url), { name: `panel.${ext}` }) };
+    } catch (err) {
+      console.error('Image error:', err.message);
+    }
+  }
+  return { url };
+}
+
+// Animated na panel: bawat uri ng ticket lumalabas isa-isa, tapos ang GIF at select menu
+async function sendTicketPanel(channel, { staffId, categoryId, image }) {
+  const message = await channel.send({
+    embeds: [embed(`${SPINNER[0]} Inihahanda ang ticket panel.`, `\`${bar(10)}\``, YELLOW)]
+  });
+  const frames = [
+    [`${SPINNER[3]} 📝 Nilalagay ang Apply Staff`, 35, TICKET_TYPES.apply.color],
+    [`${SPINNER[5]} 🤝 Nilalagay ang Partnership`, 65, TICKET_TYPES.partner.color],
+    [`${SPINNER[8]} 🛠️ Nilalagay ang Support`, 90, TICKET_TYPES.support.color]
+  ];
+  for (const [title, percent, color] of frames) {
+    await sleep(SPEED);
+    await message.edit({ embeds: [embed(title, `\`${bar(percent)}\` ${percent}%`, color)] });
+  }
+  await sleep(SPEED);
+  const panel = embed('🎫 Ticket Center', [
+    'Kailangan mo ba ng tulong, gusto mong sumali sa team o makipag-partner?',
+    'Pumili sa menu sa ibaba para magbukas ng ticket.',
+    '',
+    `${TICKET_TYPES.apply.emoji} **Apply Staff** - ${TICKET_TYPES.apply.description}`,
+    `${TICKET_TYPES.partner.emoji} **Partnership** - ${TICKET_TYPES.partner.description}`,
+    `${TICKET_TYPES.support.emoji} **Support** - ${TICKET_TYPES.support.description}`
+  ].join('\n'));
+  applyImage(panel, image);
+  await message.edit({
+    embeds: [panel],
+    components: [ticketSelectRow(staffId, categoryId)],
+    files: image.file ? [image.file] : []
+  });
+}
+
+add('setup-ticket', 'Maglagay ng ticket panel (Apply Staff, Partnership, Support)', async i => {
   const staff = i.options.getRole('staff', true);
   const category = i.options.getChannel('category');
-  if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageChannels])) {
-    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Channels.');
+  const needed = [...panelPermissions, PermissionFlagsBits.ManageChannels];
+  if (i.options.getAttachment('image')) needed.push(PermissionFlagsBits.AttachFiles);
+  if (!i.appPermissions.has(needed)) {
+    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links, Manage Channels at Attach Files (kung mag-a-upload ng larawan).');
   }
   if (staff.id === i.guild.id) return warn(i, 'Hindi puwedeng @everyone ang staff role.');
-  await deliver(i, 'Sine-setup', async () => {
-    await sendPanel(i.channel, '🎫 Support Ticket', 'Kailangan ng tulong? Pindutin ang button para magbukas ng ticket.',
-      button(`ticket_open:${staff.id}:${category?.id ?? i.channel.parentId ?? '0'}`, 'Open Ticket', ButtonStyle.Primary, '🎫'));
-    return success('✅ Tapos na!', 'Naka-setup na ang ticket system.');
+  const problem = imageProblem(i);
+  if (problem) return warn(i, problem);
+  await deliver(i, 'Sine-setup ang ticket panel', async () => {
+    const image = await resolveImage(i);
+    await sendTicketPanel(i.channel, {
+      staffId: staff.id,
+      categoryId: category?.id ?? i.channel.parentId ?? '0',
+      image
+    });
+    return success('✅ Tapos na!', image.file || image.url
+      ? 'Naka-setup na ang ticket panel.'
+      : 'Naka-setup na ang ticket panel, pero walang larawan. Gamitin ang `image` o `image_url` option sa susunod.');
   }, true);
-}, c => c
+}, c => addImageOptions(c
   .addRoleOption(o => o.setName('staff').setDescription('Role na sasagot sa tickets').setRequired(true))
-  .addChannelOption(o => o.setName('category').setDescription('Category ng mga ticket').addChannelTypes(ChannelType.GuildCategory)),
+  .addChannelOption(o => o.setName('category').setDescription('Category ng mga ticket').addChannelTypes(ChannelType.GuildCategory))),
 PermissionFlagsBits.Administrator);
 
 const openingTicket = new Set(); // iwas dobleng ticket kapag sunod-sunod ang pindot
@@ -972,10 +1133,12 @@ async function handleVerify(i, roleId) {
   }, SPEED, true);
 }
 
-async function createTicket(i, staffId, categoryId) {
+async function createTicket(i, staffId, categoryId, typeKey) {
+  const type = TICKET_TYPES[typeKey];
+  const topic = `ticket:${i.user.id}:${staffId}:${typeKey}`;
   const channels = await i.guild.channels.fetch();
-  const existing = channels.find(c => c?.topic?.startsWith(`ticket:${i.user.id}:`));
-  if (existing) return notice('ℹ️ May bukas ka pang ticket', `Pumunta sa <#${existing.id}>`);
+  const existing = channels.find(c => c?.topic === topic);
+  if (existing) return notice(`ℹ️ May bukas ka pang ${type.label} ticket`, `Pumunta sa <#${existing.id}>`);
 
   const staff = await i.guild.roles.fetch(staffId);
   if (!staff) return fail('Wala na ang staff role. Ipa-setup ulit sa admin.');
@@ -990,10 +1153,10 @@ async function createTicket(i, staffId, categoryId) {
     PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
   ];
   const channel = await i.guild.channels.create({
-    name: `ticket-${i.user.username}`.slice(0, 90),
+    name: `${type.short}-${i.user.username}`.slice(0, 90),
     type: ChannelType.GuildText,
     parent: channels.has(categoryId) ? categoryId : null,
-    topic: `ticket:${i.user.id}:${staffId}`,
+    topic,
     permissionOverwrites: [
       { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
       { id: i.user.id, allow: member },
@@ -1002,32 +1165,54 @@ async function createTicket(i, staffId, categoryId) {
     ]
   });
   try {
+    const image = await ticketImage(i);
     // Nasa content ang mention dahil hindi nagpi-ping ang mention sa loob ng embed
     const message = await channel.send({
       content: `<@${i.user.id}> <@&${staffId}>`,
-      embeds: [embed('⏳ Binubuksan ang ticket.', `\`${bar(30)}\``)],
+      embeds: [embed(`${SPINNER[0]} ${type.emoji} Binubuksan ang ${type.label} ticket.`, `\`${bar(30)}\``, type.color)],
       allowedMentions: { users: [i.user.id], roles: [staffId] }
     });
     await sleep(SPEED);
-    await message.edit({ embeds: [embed('✨ Binubuksan ang ticket..', `\`${bar(80)}\``)] });
+    await message.edit({ embeds: [embed(`${SPINNER[4]} ${type.emoji} Binubuksan ang ${type.label} ticket..`, `\`${bar(65)}\``, type.color)] });
     await sleep(SPEED);
+    await message.edit({ embeds: [embed(`${SPINNER[8]} ${type.emoji} Binubuksan ang ${type.label} ticket...`, `\`${bar(95)}\``, type.color)] });
+    await sleep(SPEED);
+    const welcome = embed(`${type.emoji} ${type.label} Ticket`, [
+      `Hello <@${i.user.id}>! Salamat sa pagbubukas ng ticket.`,
+      '',
+      ...type.intro,
+      '',
+      `⏳ Hintayin ang <@&${staffId}>, sasagot sila sa lalong madaling panahon.`,
+      '🔒 Pindutin ang **Close Ticket** kapag tapos na.'
+    ].join('\n'), type.color).setTimestamp();
+    applyImage(welcome, image);
     await message.edit({
-      embeds: [success('🎫 Bukas na ang Ticket', 'Ilagay dito ang concern mo. Hintayin ang staff.')],
-      components: [button('ticket_close', 'Close Ticket', ButtonStyle.Danger, '🔒')]
+      embeds: [welcome],
+      components: [button('ticket_close', 'Close Ticket', ButtonStyle.Danger, '🔒')],
+      files: image.file ? [image.file] : []
     });
   } catch (err) {
     // Burahin ang kalahating ticket para makapagbukas ulit ang user
     await channel.delete('Pumalya ang pag-setup ng ticket').catch(console.error);
     throw err;
   }
-  return success('✅ Nagawa ang ticket!', `Pumunta sa <#${channel.id}>`);
+  return success(`${type.emoji} Nagawa ang ${type.label} ticket!`, `Pumunta sa <#${channel.id}>`);
 }
 
-async function handleTicketOpen(i, staffId, categoryId) {
+async function handleTicketSelect(i, staffId, categoryId) {
+  const typeKey = i.values[0];
+  const type = TICKET_TYPES[typeKey];
+  // Ibalik ang menu sa walang napili para makapili ulit ang kahit sino
+  i.message.edit({ components: [ticketSelectRow(staffId, categoryId)] }).catch(() => {});
+  if (!type) return warn(i, 'Hindi kilalang uri ng ticket.');
   if (openingTicket.has(i.user.id)) return warn(i, 'Ginagawa pa ang ticket mo.');
   openingTicket.add(i.user.id);
   try {
-    await deliver(i, 'Gumagawa ng ticket', () => createTicket(i, staffId, categoryId), true);
+    const frames = [
+      embed(`${SPINNER[0]} ${type.emoji} Sinusuri ang ${type.label}.`, `\`${bar(30)}\``, type.color),
+      embed(`${SPINNER[5]} ${type.emoji} Inihahanda ang channel..`, `\`${bar(65)}\``, type.color)
+    ];
+    await animate(i, frames, () => createTicket(i, staffId, categoryId, typeKey), SPEED, true);
   } finally {
     openingTicket.delete(i.user.id);
   }
@@ -1062,10 +1247,15 @@ async function handleTicketConfirm(i) {
   }
 }
 
-function handleButton(i) {
+function handleSelect(i) {
   const [action, a, b] = i.customId.split(':');
+  if (action === 'ticket_select') return handleTicketSelect(i, a, b);
+  return warn(i, 'Luma na ang menu na ito. Ipa-setup ulit sa admin.');
+}
+
+function handleButton(i) {
+  const [action, a] = i.customId.split(':');
   if (action === 'verify') return handleVerify(i, a);
-  if (action === 'ticket_open') return handleTicketOpen(i, a, b);
   if (action === 'ticket_close') return handleTicketClose(i);
   if (action === 'ticket_confirm') return handleTicketConfirm(i);
   return warn(i, 'Luma na ang button na ito. Ipa-setup ulit sa admin.');
@@ -1108,10 +1298,11 @@ client.once(Events.ClientReady, async c => {
 client.on(Events.InteractionCreate, async i => {
   // Ang buttons na may "local:" ay hawak ng sarili nilang collector (trivia, tictactoe, dashboard)
   if (i.isButton() && i.customId.startsWith('local:')) return;
-  if (!i.inCachedGuild() || !(i.isChatInputCommand() || i.isButton())) return;
-  const label = i.isButton() ? `button ${i.customId}` : `/${i.commandName}`;
+  if (!i.inCachedGuild() || !(i.isChatInputCommand() || i.isButton() || i.isStringSelectMenu())) return;
+  const label = i.isChatInputCommand() ? `/${i.commandName}` : `${i.isButton() ? 'button' : 'menu'} ${i.customId}`;
   try {
     if (i.isButton()) return await handleButton(i);
+    if (i.isStringSelectMenu()) return await handleSelect(i);
     const command = commands.get(i.commandName);
     if (!command) return;
     // Dobleng check ng permission ng gumagamit
