@@ -1,606 +1,1159 @@
-require('dotenv').config();
+require("dotenv").config();
+
 const {
-  Client, GatewayIntentBits, Events, SlashCommandBuilder, EmbedBuilder,
-  PermissionFlagsBits, MessageFlags, ActivityType, InteractionContextType,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType
-} = require('discord.js');
+    Client,
+    GatewayIntentBits,
+    ActivityType,
+    EmbedBuilder,
+    Events,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    PermissionFlagsBits,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
+} = require("discord.js");
 
-const { DISCORD_TOKEN, WELCOME_CHANNEL_ID } = process.env;
-if (!DISCORD_TOKEN) {
-  console.error('Walang DISCORD_TOKEN sa environment variables');
-  process.exit(1);
+// ============================================
+// CART3R.JAILBREAK v2.0
+// ADVANCED ANIMATED DISCORD BOT
+// ============================================
+
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+
+if (!TOKEN || !CLIENT_ID) {
+    throw new Error("Missing DISCORD_TOKEN or CLIENT_ID in .env");
 }
 
-const intents = [GatewayIntentBits.Guilds];
-if (WELCOME_CHANNEL_ID) intents.push(GatewayIntentBits.GuildMembers);
-const client = new Client({ intents });
-
-/* ========== Helpers ========== */
-const COLOR = 0x8b5cf6;
-const GREEN = 0x22c55e;
-const RED = 0xef4444;
-const YELLOW = 0xf59e0b;
-const SPEED = 300; // bilis ng animation sa milliseconds (mas mababa = mas mabilis)
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const pick = list => list[Math.floor(Math.random() * list.length)];
-const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const embed = (title, text, color = COLOR) => {
-  const e = new EmbedBuilder().setColor(color).setTitle(title);
-  if (text) e.setDescription(text);
-  return e;
-};
-const success = (title, text) => embed(title, text, GREEN);
-const fail = text => embed('❌ Hindi Natuloy', text, RED);
-const notice = (title, text) => embed(title, text, YELLOW);
-const bar = percent => '█'.repeat(Math.round(percent / 10)) + '░'.repeat(10 - Math.round(percent / 10));
-const secret = content => ({ content, flags: MessageFlags.Ephemeral });
-
-// Animation: ine-edit ang isang message nang paisa-isang frame
-// Ang "final" ay puwedeng embed, message object, o function na gumagawa ng alinman doon
-async function animate(i, frames, final, delay = SPEED, ephemeral = false) {
-  const first = { embeds: [frames[0]] };
-  if (ephemeral) first.flags = MessageFlags.Ephemeral;
-  await i.reply(first);
-  for (const frame of frames.slice(1)) {
-    await sleep(delay);
-    await i.editReply({ embeds: [frame] });
-  }
-  await sleep(delay);
-  const result = typeof final === 'function' ? await final() : final;
-  await i.editReply(result instanceof EmbedBuilder ? { embeds: [result] } : { embeds: [], ...result });
-}
-
-// Standard na loading animation para sa ibang commands
-const loadingFrames = label => [40, 90].map((p, n) =>
-  embed(`${['⏳', '✨'][n]} ${label}${'.'.repeat(n + 2)}`, `\`${bar(p)}\` ${p}%`));
-const deliver = (i, label, final, ephemeral = false) =>
-  animate(i, loadingFrames(label), final, SPEED, ephemeral);
-
-// Animated na private message (error o paalala)
-const warn = (i, text) => deliver(i, 'Sinusuri', fail(text), true);
-
-/* ========== Commands ========== */
-const commands = new Map();
-
-function add(name, description, run, build, permission) {
-  const data = new SlashCommandBuilder()
-    .setName(name)
-    .setDescription(description)
-    .setContexts(InteractionContextType.Guild);
-  if (build) build(data);
-  if (permission) data.setDefaultMemberPermissions(permission);
-  commands.set(name, { data, run, permission });
-}
-
-/* ----- General ----- */
-add('help', 'Listahan ng commands', async i => {
-  const list = [...commands.values()].map(c => `\`/${c.data.name}\` - ${c.data.description}`);
-  await deliver(i, 'Binubuksan ang menu', embed('📖 Mga Command', list.join('\n')), true);
-});
-
-add('ping', 'Tingnan ang bilis ng bot', async i => {
-  const ping = client.ws.ping < 0 ? 'sinusukat pa' : `${Math.round(client.ws.ping)}ms`;
-  await animate(i,
-    [embed('🏓 Ping.'), embed('🏓 Ping..'), embed('🏓 Ping...')],
-    embed('🏓 Pong!', `Latency: **${ping}**`), SPEED);
-});
-
-add('uptime', 'Gaano na katagal online ang bot', async i => {
-  const since = Math.floor((Date.now() - client.uptime) / 1000);
-  await deliver(i, 'Kinukuha ang uptime', embed('⏱️ Uptime', `Online mula <t:${since}:R>`));
-});
-
-add('avatar', 'Ipakita ang avatar', async i => {
-  const user = i.options.getUser('user') ?? i.user;
-  await deliver(i, 'Kinukuha ang avatar',
-    embed(`🖼️ Avatar ni ${user.username}`).setImage(user.displayAvatarURL({ size: 1024 })));
-}, c => c.addUserOption(o => o.setName('user').setDescription('Kaninong avatar')));
-
-add('userinfo', 'Info ng isang user', async i => {
-  const user = i.options.getUser('user') ?? i.user;
-  await deliver(i, 'Hinahanap ang user', async () => {
-    const member = await i.guild.members.fetch(user.id).catch(() => null);
-    const lines = [
-      `**Username:** ${user.username}`,
-      `**ID:** ${user.id}`,
-      `**Account ginawa:** <t:${Math.floor(user.createdTimestamp / 1000)}:D>`
-    ];
-    if (member?.joinedTimestamp) lines.push(`**Sumali sa server:** <t:${Math.floor(member.joinedTimestamp / 1000)}:D>`);
-    return embed('👤 User Info', lines.join('\n')).setThumbnail(user.displayAvatarURL());
-  });
-}, c => c.addUserOption(o => o.setName('user').setDescription('Sinong user')));
-
-add('serverinfo', 'Info ng server', async i => {
-  await deliver(i, 'Kinukuha ang server info', async () => {
-    const g = await client.guilds.fetch({ guild: i.guildId, force: true });
-    const e = embed(`🏠 ${g.name}`, [
-      `**Members:** ${g.approximateMemberCount ?? g.memberCount}`,
-      `**Ginawa:** <t:${Math.floor(g.createdTimestamp / 1000)}:D>`,
-      `**Boosts:** ${g.premiumSubscriptionCount ?? 0}`
-    ].join('\n'));
-    if (g.iconURL()) e.setThumbnail(g.iconURL({ size: 256 }));
-    return e;
-  });
-});
-
-add('say', 'Magsalita ang bot', async i => {
-  await deliver(i, 'Nagta-type', embed('💬 Mensahe', i.options.getString('message', true)));
-}, c => c.addStringOption(o => o.setName('message').setDescription('Sasabihin').setRequired(true).setMaxLength(2000)),
-PermissionFlagsBits.ManageMessages);
-
-add('poll', 'Gumawa ng botohan (24 oras)', async i => {
-  // Hindi puwedeng idagdag ang poll sa pag-edit, kaya bagong message ito pagkatapos ng animation
-  await deliver(i, 'Ginagawa ang botohan', success('📊 Handa na ang botohan!', 'Nasa ibaba ang botohan.'));
-  await i.followUp({
-    poll: {
-      question: { text: i.options.getString('tanong', true) },
-      answers: ['a', 'b'].map(k => ({ text: i.options.getString(k, true) })),
-      duration: 24,
-      allowMultiselect: false
-    }
-  });
-}, c => c
-  .addStringOption(o => o.setName('tanong').setDescription('Tanong').setRequired(true).setMaxLength(300))
-  .addStringOption(o => o.setName('a').setDescription('Unang sagot').setRequired(true).setMaxLength(55))
-  .addStringOption(o => o.setName('b').setDescription('Pangalawang sagot').setRequired(true).setMaxLength(55)));
-
-/* ----- Fun (animated) ----- */
-add('coinflip', 'Mag-toss ng barya', async i => {
-  await animate(i,
-    ['🪙 Pinapaikot.', '🌕 Pinapaikot..', '🪙 Pinapaikot...'].map(t => embed(t)),
-    embed('🪙 Resulta', `**${pick(['Heads (Tao)', 'Tails (Ibon)'])}!**`), SPEED);
-});
-
-add('dice', 'Magpagulong ng dice', async i => {
-  const frames = ['🎲 Gumugulong.', '🎲 Gumugulong..', '🎲 Gumugulong...'].map(t => embed(t));
-  await animate(i, frames, embed('🎲 Resulta', `Lumabas: **${randInt(1, 6)}**`), SPEED);
-});
-
-add('slots', 'Maglaro ng slot machine (katuwaan lang)', async i => {
-  const icons = ['🍒', '🍋', '🍇', '⭐', '💎'];
-  const result = [pick(icons), pick(icons), pick(icons)];
-  const spin = () => pick(icons);
-  const frames = [
-    [spin(), spin(), spin()],
-    [spin(), spin(), spin()],
-    [result[0], spin(), spin()],
-    [result[0], result[1], spin()]
-  ].map(r => embed('🎰 Umiikot...', `# ${r.join(' | ')}`));
-  const matches = new Set(result).size;
-  const verdict = matches === 1 ? '🎉 JACKPOT!' : matches === 2 ? '✨ May pares!' : '😅 Talo, try ulit!';
-  await animate(i, frames, embed(verdict, `# ${result.join(' | ')}`), SPEED);
-});
-
-add('8ball', 'Magtanong sa magic 8ball', async i => {
-  const question = i.options.getString('tanong', true);
-  const answer = pick(['Oo naman!', 'Hindi.', 'Siguro.', 'Malabo yan.', 'Sigurado ako, oo!', 'Tanong ka ulit mamaya.']);
-  await animate(i,
-    [embed('🎱 Nag-iisip.'), embed('🎱 Nag-iisip..'), embed('🎱 Nag-iisip...')],
-    embed('🎱 Magic 8Ball', `**Tanong:** ${question}\n**Sagot:** ${answer}`), SPEED);
-}, c => c.addStringOption(o => o.setName('tanong').setDescription('Tanong mo').setRequired(true).setMaxLength(300)));
-
-add('rps', 'Bato bato pick laban sa bot', async i => {
-  const names = { bato: '🪨 Bato', papel: '📄 Papel', gunting: '✂️ Gunting' };
-  const beats = { bato: 'gunting', papel: 'bato', gunting: 'papel' };
-  const you = i.options.getString('pili', true);
-  const bot = pick(Object.keys(names));
-  const result = you === bot ? '🤝 Tabla!' : beats[you] === bot ? '🎉 Panalo ka!' : '🤖 Panalo ako!';
-  await animate(i,
-    [embed('🪨 Bato...'), embed('📄 Bato... Bato...'), embed('✂️ Bato... Bato... PICK!')],
-    embed(result, `Ikaw: ${names[you]}\nBot: ${names[bot]}`), SPEED);
-}, c => c.addStringOption(o => o.setName('pili').setDescription('Pili mo').setRequired(true)
-  .addChoices({ name: 'Bato', value: 'bato' }, { name: 'Papel', value: 'papel' }, { name: 'Gunting', value: 'gunting' })));
-
-add('love', 'Love meter ng dalawang user (katuwaan lang)', async i => {
-  const a = i.options.getUser('user1', true);
-  const b = i.options.getUser('user2') ?? i.user;
-  const score = randInt(0, 100);
-  const frames = [10, 40, 70].map(p => embed('💘 Kinakalkula...', `\`${bar(p)}\``));
-  await animate(i, frames, embed('💘 Love Meter', `${a} ❤️ ${b}\n\`${bar(score)}\` **${score}%**`), SPEED);
-}, c => c
-  .addUserOption(o => o.setName('user1').setDescription('Unang user').setRequired(true))
-  .addUserOption(o => o.setName('user2').setDescription('Pangalawang user (default: ikaw)')));
-
-add('choose', 'Pipili ang bot para sa iyo', async i => {
-  const options = i.options.getString('choices', true).split(',').map(s => s.trim()).filter(Boolean);
-  if (options.length < 2) return warn(i, 'Maglagay ng 2 o higit pa, paghiwalayin ng kuwit.');
-  await animate(i,
-    [embed('🤔 Namimili.'), embed('🤔 Namimili..'), embed('🤔 Namimili...')],
-    embed('✅ Ang pinili ko', pick(options)), SPEED);
-}, c => c.addStringOption(o => o.setName('choices').setDescription('Hal. adobo, sinigang').setRequired(true).setMaxLength(1000)));
-
-add('countdown', 'Animated na countdown', async i => {
-  const n = i.options.getInteger('segundo') ?? 5;
-  const frames = Array.from({ length: n }, (_, x) => embed('⏳ Countdown', `# ${n - x}`));
-  await animate(i, frames, embed('🚀 GO!'), 1000);
-}, c => c.addIntegerOption(o => o.setName('segundo').setDescription('3 hanggang 10').setMinValue(3).setMaxValue(10)));
-
-add('loading', 'Animated na loading bar', async i => {
-  const frames = [0, 30, 70].map(p => embed('⚙️ Loading...', `\`${bar(p)}\` ${p}%`));
-  await animate(i, frames, embed('✅ Tapos na!', `\`${bar(100)}\` 100%`), SPEED);
-});
-
-/* ----- Moderation ----- */
-add('clear', 'Magbura ng messages', async i => {
-  if (!i.appPermissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ReadMessageHistory])) {
-    return warn(i, 'Kailangan ko ng View Channel, Manage Messages at Read Message History.');
-  }
-  await deliver(i, 'Naglilinis', async () => {
-    const deleted = await i.channel.bulkDelete(i.options.getInteger('dami', true), true);
-    return success('🧹 Tapos na!', `Nabura: **${deleted.size}** (hindi mabubura nang sabay ang lampas 14 na araw)`);
-  }, true);
-}, c => c.addIntegerOption(o => o.setName('dami').setDescription('1 hanggang 100').setRequired(true).setMinValue(1).setMaxValue(100)),
-PermissionFlagsBits.ManageMessages);
-
-// Safety check: bawal sa sarili, sa bot, at sa mas mataas o kapantay na role
-// getMember: kasama na sa command ang member, kaya walang hintay bago makasagot
-function getTarget(i) {
-  const user = i.options.getUser('user', true);
-  const member = i.options.getMember('user');
-  let problem = null;
-  if (!member) problem = 'Wala sa server ang user.';
-  else if (user.id === i.user.id || user.id === client.user.id) problem = 'Hindi puwede sa sarili mo o sa bot.';
-  else if (i.guild.ownerId !== i.user.id && member.roles.highest.comparePositionTo(i.member.roles.highest) >= 0) {
-    problem = 'Mas mataas o kapantay mo ang role niya.';
-  }
-  return { user, member, problem };
-}
-
-function addModeration(name, description, permission, check, style, action, extra) {
-  add(name, description, async i => {
-    const { user, member, problem } = getTarget(i);
-    if (problem) return warn(i, problem);
-    if (!i.appPermissions.has(permission) || !member[check]) {
-      return warn(i, 'Kulang ang permission ng bot, o mas mataas ang role ng user.');
-    }
-    const reason = i.options.getString('dahilan') ?? 'Walang dahilan';
-    const avatar = user.displayAvatarURL({ size: 256 });
-    const frames = style.frames.map((title, n) =>
-      embed(title, `**${user.username}**\n\`${bar([30, 65, 95][n])}\``, style.color).setThumbnail(avatar));
-    await animate(i, frames, async () => {
-      const done = await action(i, member, `${i.user.username}: ${reason}`.slice(0, 512));
-      return embed(`${style.icon} ${done}`,
-        `**User:** ${user.username}\n**Moderator:** ${i.user.username}\n**Dahilan:** ${reason}`, style.color)
-        .setThumbnail(avatar).setTimestamp();
-    });
-  }, c => {
-    c.addUserOption(o => o.setName('user').setDescription('Target').setRequired(true));
-    if (extra) extra(c);
-    c.addStringOption(o => o.setName('dahilan').setDescription('Dahilan').setMaxLength(400));
-  }, permission);
-}
-
-addModeration('timeout', 'I-timeout ang user', PermissionFlagsBits.ModerateMembers, 'moderatable',
-  { icon: '🔇', color: YELLOW, frames: ['⏳ Inihahanda.', '⌛ Pinapatahimik..', '🔇 Tina-timeout...'] },
-  async (i, member, reason) => {
-    const minutes = i.options.getInteger('minuto', true);
-    await member.timeout(minutes * 60_000, reason);
-    return `Na-timeout nang ${minutes} minuto`;
-  },
-  c => c.addIntegerOption(o => o.setName('minuto').setDescription('Ilang minuto').setRequired(true).setMinValue(1).setMaxValue(40320)));
-
-addModeration('untimeout', 'Alisin ang timeout', PermissionFlagsBits.ModerateMembers, 'moderatable',
-  { icon: '🔊', color: GREEN, frames: ['⏳ Inihahanda.', '⌛ Inaayos..', '🔊 Inaalis ang timeout...'] },
-  async (i, member, reason) => { await member.timeout(null, reason); return 'Inalis ang timeout'; });
-
-addModeration('kick', 'I-kick ang user', PermissionFlagsBits.KickMembers, 'kickable',
-  { icon: '👢', color: YELLOW, frames: ['🎯 Tina-target.', '🦵 Bumubuwelo..', '👢 Kini-kick...'] },
-  async (i, member, reason) => { await member.kick(reason); return 'Na-kick'; });
-
-addModeration('ban', 'I-ban ang user', PermissionFlagsBits.BanMembers, 'bannable',
-  { icon: '🔨', color: RED, frames: ['🎯 Tina-target.', '⚡ Inaangat ang ban hammer..', '🔨 Bina-ban...'] },
-  async (i, member, reason) => { await member.ban({ reason }); return 'Na-ban'; });
-
-/* ----- Dagdag na commands ----- */
-add('joke', 'Random na joke', async i => {
-  await deliver(i, 'Nag-iisip ng joke', embed('😂 Joke', pick([
-    'Bakit malungkot ang kalendaryo? Bilang na kasi ang mga araw niya.',
-    'Anong isda ang mahilig matulog? E di tulog-ingan!',
-    'Bakit nag-aral ang programmer sa dagat? Gusto niyang matuto ng C.',
-    'Anong sabi ng zero sa eight? Uy, ganda ng belt mo!'
-  ])));
-});
-
-add('membercount', 'Bilang ng members', async i => {
-  await deliver(i, 'Binibilang', async () => {
-    const g = await client.guilds.fetch({ guild: i.guildId, force: true });
-    return embed('👥 Members', `**${g.approximateMemberCount ?? g.memberCount}** members`);
-  });
-});
-
-add('announce', 'Magpadala ng announcement dito', async i => {
-  const needed = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
-  if (!i.appPermissions.has(needed)) return warn(i, 'Kailangan ko ng View Channel, Send Messages at Embed Links.');
-  await deliver(i, 'Ipinapadala', async () => {
-    await i.channel.send({ embeds: [embed('📢 Announcement', i.options.getString('message', true))] });
-    return success('✅ Naipadala na!', 'Nasa channel na ang announcement.');
-  }, true);
-}, c => c.addStringOption(o => o.setName('message').setDescription('Announcement').setRequired(true).setMaxLength(2000)),
-PermissionFlagsBits.ManageMessages);
-
-add('slowmode', 'Itakda ang slowmode ng channel', async i => {
-  if (!i.appPermissions.has(PermissionFlagsBits.ManageChannels)) return warn(i, 'Kailangan ko ng Manage Channels.');
-  const seconds = i.options.getInteger('segundo', true);
-  await deliver(i, 'Inaayos', async () => {
-    await i.channel.setRateLimitPerUser(seconds);
-    return success('🐢 Slowmode', seconds ? `Naka-set sa **${seconds}s**` : 'Naka-off na');
-  });
-}, c => c.addIntegerOption(o => o.setName('segundo').setDescription('0 para i-off').setRequired(true).setMinValue(0).setMaxValue(21600)),
-PermissionFlagsBits.ManageChannels);
-
-function addLock(name, description, value, message) {
-  add(name, description, async i => {
-    if (!i.appPermissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
-      return warn(i, 'Kailangan ko ng Manage Channels at Manage Roles.');
-    }
-    if (i.channel.type !== ChannelType.GuildText) return warn(i, 'Sa text channel lang ito puwede.');
-    await deliver(i, 'Inaayos', async () => {
-      // Kapag nag-lock, payagan muna ang bot para makapag-send pa rin ito
-      if (value === false) await i.channel.permissionOverwrites.edit(client.user, { SendMessages: true });
-      await i.channel.permissionOverwrites.edit(i.guild.roles.everyone, { SendMessages: value });
-      return success(message, `Binago ni ${i.user.username}`);
-    });
-  }, null, PermissionFlagsBits.ManageChannels);
-}
-addLock('lock', 'I-lock ang channel', false, '🔒 Naka-lock na ang channel');
-addLock('unlock', 'I-unlock ang channel', null, '🔓 Naka-unlock na ang channel');
-
-/* ========== Verify at Ticket ========== */
-const button = (id, label, style, emoji) => new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style).setEmoji(emoji));
-
-// Mga permission na hindi puwedeng ipamigay ng verify button
-const DANGEROUS = [
-  'Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ManageMessages',
-  'ManageWebhooks', 'ManageNicknames', 'ManageThreads', 'ManageEvents',
-  'ManageGuildExpressions', 'KickMembers', 'BanMembers', 'ModerateMembers', 'MentionEveryone'
-].map(name => PermissionFlagsBits[name]);
-
-const safeRole = (guild, role) => Boolean(role) && role.id !== guild.id && !role.managed && role.editable &&
-  !DANGEROUS.some(flag => role.permissions.has(flag, false));
-
-// Animated na panel na may button
-async function sendPanel(channel, title, text, row) {
-  const message = await channel.send({ embeds: [embed('⏳ Inihahanda.', `\`${bar(30)}\``)] });
-  await sleep(SPEED);
-  await message.edit({ embeds: [embed('✨ Inihahanda..', `\`${bar(80)}\``)] });
-  await sleep(SPEED);
-  await message.edit({ embeds: [embed(title, text)], components: [row] });
-}
-
-const panelPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks];
-
-add('setup-verify', 'Maglagay ng verify button sa channel na ito', async i => {
-  const role = i.options.getRole('role', true);
-  if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageRoles])) {
-    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Roles.');
-  }
-  if (!safeRole(i.guild, role)) {
-    return warn(i, 'Hindi puwede ang role na ito. Dapat mas mababa sa role ng bot at walang admin o moderation permission.');
-  }
-  if (i.guild.ownerId !== i.user.id && role.comparePositionTo(i.member.roles.highest) >= 0) {
-    return warn(i, 'Dapat mas mababa ang role kaysa sa pinakamataas mong role.');
-  }
-  await deliver(i, 'Sine-setup', async () => {
-    await sendPanel(i.channel, '✅ Verification', `Pindutin ang button para makuha ang <@&${role.id}> role.`,
-      button(`verify:${role.id}`, 'Verify', ButtonStyle.Success, '✅'));
-    return success('✅ Tapos na!', 'Naka-setup na ang verification.');
-  }, true);
-}, c => c.addRoleOption(o => o.setName('role').setDescription('Role na ibibigay').setRequired(true)),
-PermissionFlagsBits.Administrator);
-
-add('setup-ticket', 'Maglagay ng ticket button sa channel na ito', async i => {
-  const staff = i.options.getRole('staff', true);
-  const category = i.options.getChannel('category');
-  if (!i.appPermissions.has([...panelPermissions, PermissionFlagsBits.ManageChannels])) {
-    return warn(i, 'Kailangan ko ng View Channel, Send Messages, Embed Links at Manage Channels.');
-  }
-  if (staff.id === i.guild.id) return warn(i, 'Hindi puwedeng @everyone ang staff role.');
-  await deliver(i, 'Sine-setup', async () => {
-    await sendPanel(i.channel, '🎫 Support Ticket', 'Kailangan ng tulong? Pindutin ang button para magbukas ng ticket.',
-      button(`ticket_open:${staff.id}:${category?.id ?? i.channel.parentId ?? '0'}`, 'Open Ticket', ButtonStyle.Primary, '🎫'));
-    return success('✅ Tapos na!', 'Naka-setup na ang ticket system.');
-  }, true);
-}, c => c
-  .addRoleOption(o => o.setName('staff').setDescription('Role na sasagot sa tickets').setRequired(true))
-  .addChannelOption(o => o.setName('category').setDescription('Category ng mga ticket').addChannelTypes(ChannelType.GuildCategory)),
-PermissionFlagsBits.Administrator);
-
-const openingTicket = new Set(); // iwas dobleng ticket kapag sunod-sunod ang pindot
-const closingTicket = new Set();
-
-async function handleVerify(i, roleId) {
-  const frames = ['🔍 Sinusuri ang account.', '🛡️ Vine-verify..', '🔑 Ibinibigay ang role...']
-    .map((title, n) => embed(title, `\`${bar([30, 65, 95][n])}\``));
-  await animate(i, frames, async () => {
-    const role = await i.guild.roles.fetch(roleId);
-    if (!safeRole(i.guild, role)) return fail('Hindi maibigay ang role. Sabihan ang admin.');
-    if (i.member.roles.cache.has(role.id)) return notice('ℹ️ Verified ka na!', 'Nasa iyo na ang role.');
-    await i.member.roles.add(role, 'Verify button');
-    return success('🎉 Verified!', `Nakuha mo na ang <@&${role.id}> role.`);
-  }, SPEED, true);
-}
-
-async function createTicket(i, staffId, categoryId) {
-  const channels = await i.guild.channels.fetch();
-  const existing = channels.find(c => c?.topic?.startsWith(`ticket:${i.user.id}:`));
-  if (existing) return notice('ℹ️ May bukas ka pang ticket', `Pumunta sa <#${existing.id}>`);
-
-  const staff = await i.guild.roles.fetch(staffId);
-  if (!staff) return fail('Wala na ang staff role. Ipa-setup ulit sa admin.');
-
-  // Dapat nasa bot ang lahat ng permission na ibibigay nito sa ticket channel
-  const needed = ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'EmbedLinks', 'ManageChannels'];
-  if (!i.guild.members.me.permissions.has(needed.map(name => PermissionFlagsBits[name]))) {
-    return fail('Kulang ang permission ng bot. Kailangan: View Channels, Send Messages, Read Message History, Embed Links at Manage Channels.');
-  }
-
-  const member = [
-    PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory
-  ];
-  const channel = await i.guild.channels.create({
-    name: `ticket-${i.user.username}`.slice(0, 90),
-    type: ChannelType.GuildText,
-    parent: channels.has(categoryId) ? categoryId : null,
-    topic: `ticket:${i.user.id}:${staffId}`,
-    permissionOverwrites: [
-      { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-      { id: i.user.id, allow: member },
-      { id: staffId, allow: member },
-      { id: client.user.id, allow: [...member, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ManageChannels] }
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers
     ]
-  });
-  try {
-    // Nasa content ang mention dahil hindi nagpi-ping ang mention sa loob ng embed
-    const message = await channel.send({
-      content: `<@${i.user.id}> <@&${staffId}>`,
-      embeds: [embed('⏳ Binubuksan ang ticket.', `\`${bar(30)}\``)],
-      allowedMentions: { users: [i.user.id], roles: [staffId] }
-    });
-    await sleep(SPEED);
-    await message.edit({ embeds: [embed('✨ Binubuksan ang ticket..', `\`${bar(80)}\``)] });
-    await sleep(SPEED);
-    await message.edit({
-      embeds: [success('🎫 Bukas na ang Ticket', 'Ilagay dito ang concern mo. Hintayin ang staff.')],
-      components: [button('ticket_close', 'Close Ticket', ButtonStyle.Danger, '🔒')]
-    });
-  } catch (err) {
-    // Burahin ang kalahating ticket para makapagbukas ulit ang user
-    await channel.delete('Pumalya ang pag-setup ng ticket').catch(console.error);
-    throw err;
-  }
-  return success('✅ Nagawa ang ticket!', `Pumunta sa <#${channel.id}>`);
-}
-
-async function handleTicketOpen(i, staffId, categoryId) {
-  if (openingTicket.has(i.user.id)) return warn(i, 'Ginagawa pa ang ticket mo.');
-  openingTicket.add(i.user.id);
-  try {
-    await deliver(i, 'Gumagawa ng ticket', () => createTicket(i, staffId, categoryId), true);
-  } finally {
-    openingTicket.delete(i.user.id);
-  }
-}
-
-// Puwedeng mag-close: may-ari ng ticket, staff, o may Manage Channels
-function ticketAccess(i) {
-  const [tag, ownerId, staffId] = (i.channel.topic ?? '').split(':');
-  if (tag !== 'ticket') return false;
-  return i.user.id === ownerId || i.member.roles.cache.has(staffId) ||
-    i.memberPermissions.has(PermissionFlagsBits.ManageChannels);
-}
-
-async function handleTicketClose(i) {
-  if (!ticketAccess(i)) return warn(i, 'Hindi mo puwedeng isara ang ticket na ito.');
-  await deliver(i, 'Sandali', {
-    embeds: [notice('⚠️ Sigurado ka?', 'Mabubura ang channel at lahat ng messages dito.')],
-    components: [button('ticket_confirm', 'Oo, isara', ButtonStyle.Danger, '🗑️')]
-  }, true);
-}
-
-async function handleTicketConfirm(i) {
-  if (!ticketAccess(i)) return warn(i, 'Hindi mo puwedeng isara ang ticket na ito.');
-  if (closingTicket.has(i.channelId)) return warn(i, 'Isinasara na.');
-  closingTicket.add(i.channelId);
-  try {
-    const frames = [3, 2, 1].map(n => embed('🔒 Isinasara ang ticket', `# ${n}`, RED));
-    await animate(i, frames, embed('👋 Paalam!', 'Binubura na ang channel.', RED), 1000);
-    await i.channel.delete(`Isinara ni ${i.user.username}`);
-  } finally {
-    closingTicket.delete(i.channelId);
-  }
-}
-
-function handleButton(i) {
-  const [action, a, b] = i.customId.split(':');
-  if (action === 'verify') return handleVerify(i, a);
-  if (action === 'ticket_open') return handleTicketOpen(i, a, b);
-  if (action === 'ticket_close') return handleTicketClose(i);
-  if (action === 'ticket_confirm') return handleTicketConfirm(i);
-  return warn(i, 'Luma na ang button na ito. Ipa-setup ulit sa admin.');
-}
-
-/* ========== Animated status ========== */
-function startStatus() {
-  const statuses = [
-    () => ({ name: '/help para sa commands', type: ActivityType.Listening }),
-    () => ({ name: `${client.guilds.cache.size} server(s)`, type: ActivityType.Watching }),
-    () => ({ name: 'slots at rps 🎰', type: ActivityType.Playing }),
-    () => ({ name: '✨ Online na ✨', type: ActivityType.Custom })
-  ];
-  let index = 0;
-  const update = () => {
-    const activity = statuses[index++ % statuses.length]();
-    client.user.setPresence({ status: 'online', activities: [activity] });
-  };
-  update();
-  setInterval(update, 20_000); // huwag masyadong mabilis dahil may rate limit
-}
-
-/* ========== Events ========== */
-client.once(Events.ClientReady, async c => {
-  console.log(`Online na si ${c.user.tag}`);
-  startStatus();
-  try {
-    await c.application.commands.set([...commands.values()].map(cmd => cmd.data.toJSON()));
-    console.log(`Na-register na ang commands (${commands.size})`);
-  } catch (err) {
-    console.error('Hindi na-register ang commands:', err);
-  }
 });
 
-client.on(Events.InteractionCreate, async i => {
-  if (!i.inCachedGuild() || !(i.isChatInputCommand() || i.isButton())) return;
-  const label = i.isButton() ? `button ${i.customId}` : `/${i.commandName}`;
-  try {
-    if (i.isButton()) return await handleButton(i);
-    const command = commands.get(i.commandName);
-    if (!command) return;
-    // Dobleng check ng permission ng gumagamit
-    if (command.permission && !i.memberPermissions.has(command.permission)) {
-      return await warn(i, 'Wala kang permission para dito.');
-    }
-    await command.run(i);
-  } catch (err) {
-    console.error(`Error sa ${label}:`, err);
-    // Animated din ang error, at pinapalitan ang loading message
+const RED = 0xB00020;
+const GREEN = 0x00CC66;
+
+const sleep = ms =>
+    new Promise(resolve => setTimeout(resolve, ms));
+
+// ============================================
+// ANIMATED BOT STATUS
+// ============================================
+
+const activities = [
+    "⚡ CART3R SYSTEM ONLINE",
+    "🔴 CART3R JAILBREAK",
+    "🤖 Monitoring servers",
+    "💻 JavaScript Development",
+    "🌐 Protecting communities",
+    "🚀 Ready for commands",
+    "👾 Running advanced systems",
+    "⚙️ All systems operational"
+];
+
+let activityIndex = 0;
+
+function animateStatus() {
+    if (!client.user) return;
+
+    client.user.setPresence({
+        status: "online",
+        activities: [{
+            name: activities[activityIndex],
+            type: ActivityType.Playing
+        }]
+    });
+
+    activityIndex =
+        (activityIndex + 1) % activities.length;
+}
+
+// ============================================
+// EMBED GENERATOR
+// ============================================
+
+function makeEmbed(title, description, color = RED) {
+    return new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setDescription(description)
+        .setFooter({
+            text: "CART3R.JAILBREAK • VERSION 2.0"
+        })
+        .setTimestamp();
+}
+
+// ============================================
+// SLASH COMMAND DIRECTORY
+// ============================================
+
+const commands = [
+
+    // GENERAL
+    new SlashCommandBuilder()
+        .setName("ping")
+        .setDescription("Check bot latency"),
+
+    new SlashCommandBuilder()
+        .setName("help")
+        .setDescription("Show all bot commands"),
+
+    new SlashCommandBuilder()
+        .setName("dashboard")
+        .setDescription("Open animated dashboard"),
+
+    new SlashCommandBuilder()
+        .setName("animate")
+        .setDescription("Test animated bot effects"),
+
+    new SlashCommandBuilder()
+        .setName("server")
+        .setDescription("Show server information"),
+
+    new SlashCommandBuilder()
+        .setName("userinfo")
+        .setDescription("Show user information")
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Select a member")
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("avatar")
+        .setDescription("Show a user's avatar")
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Select a member")
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("botinfo")
+        .setDescription("Show bot information"),
+
+    new SlashCommandBuilder()
+        .setName("uptime")
+        .setDescription("Show bot uptime"),
+
+    // FUN
+    new SlashCommandBuilder()
+        .setName("8ball")
+        .setDescription("Ask the magic 8ball")
+        .addStringOption(o =>
+            o.setName("question")
+                .setDescription("Your question")
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("coinflip")
+        .setDescription("Flip a coin"),
+
+    new SlashCommandBuilder()
+        .setName("dice")
+        .setDescription("Roll a dice"),
+
+    // COMMUNITY
+    new SlashCommandBuilder()
+        .setName("poll")
+        .setDescription("Create a community poll")
+        .addStringOption(o =>
+            o.setName("question")
+                .setDescription("Poll question")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("option1")
+                .setDescription("First option")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("option2")
+                .setDescription("Second option")
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("say")
+        .setDescription("Send a bot message")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageMessages
+        )
+        .addStringOption(o =>
+            o.setName("message")
+                .setDescription("Message to send")
+                .setRequired(true)
+        ),
+
+    // MODERATION
+    new SlashCommandBuilder()
+        .setName("kick")
+        .setDescription("Kick a server member")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.KickMembers
+        )
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Member to kick")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("reason")
+                .setDescription("Reason")
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("ban")
+        .setDescription("Ban a server member")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.BanMembers
+        )
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Member to ban")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("reason")
+                .setDescription("Reason")
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("timeout")
+        .setDescription("Temporarily timeout a member")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ModerateMembers
+        )
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Member to timeout")
+                .setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("minutes")
+                .setDescription("Timeout duration in minutes")
+                .setMinValue(1)
+                .setMaxValue(40320)
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("untimeout")
+        .setDescription("Remove a member's timeout")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ModerateMembers
+        )
+        .addUserOption(o =>
+            o.setName("member")
+                .setDescription("Member to untimeout")
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("clear")
+        .setDescription("Delete recent messages")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageMessages
+        )
+        .addIntegerOption(o =>
+            o.setName("amount")
+                .setDescription("Number of messages (1-100)")
+                .setMinValue(1)
+                .setMaxValue(100)
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("slowmode")
+        .setDescription("Change channel slowmode")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageChannels
+        )
+        .addIntegerOption(o =>
+            o.setName("seconds")
+                .setDescription("Slowmode seconds (0-21600)")
+                .setMinValue(0)
+                .setMaxValue(21600)
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("lock")
+        .setDescription("Lock the current text channel")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageChannels
+        ),
+
+    new SlashCommandBuilder()
+        .setName("unlock")
+        .setDescription("Unlock the current text channel")
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.ManageChannels
+        )
+
+].map(command => command.toJSON());
+
+// ============================================
+// REGISTER SLASH COMMANDS
+// ============================================
+
+async function registerCommands() {
+    const rest = new REST({ version: "10" })
+        .setToken(TOKEN);
+
     try {
-      const error = fail('May error. Tingnan ang permissions ng bot.');
-      if (i.replied || i.deferred) {
-        await i.editReply({ content: '', embeds: [notice('⚠️ May problema...', 'Sandali lang.')], components: [] });
-        await sleep(SPEED);
-        await i.editReply({ embeds: [error] });
-      } else {
-        await deliver(i, 'Sinusuri', error, true);
-      }
-    } catch (replyError) {
-      console.error('Hindi maipakita ang error:', replyError.message);
+        console.log("Registering commands...");
+
+        const route = GUILD_ID
+            ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
+            : Routes.applicationCommands(CLIENT_ID);
+
+        await rest.put(route, {
+            body: commands
+        });
+
+        console.log(Registered ${commands.length} commands.);
+    } catch (error) {
+        console.error("Registration error:", error);
     }
-  }
+}
+
+// ============================================
+// STARTUP
+// ============================================
+
+client.once(Events.ClientReady, async readyClient => {
+
+    console.log("====================================");
+    console.log("CART3R.JAILBREAK");
+    console.log(BOT: ${readyClient.user.tag});
+    console.log(ID: ${readyClient.user.id});
+    console.log("STATUS: ONLINE");
+    console.log("VERSION: 2.0");
+    console.log("====================================");
+
+    await registerCommands();
+
+    animateStatus();
+
+    setInterval(animateStatus, 10000);
 });
+
+// ============================================
+// WELCOME SYSTEM
+// ============================================
 
 client.on(Events.GuildMemberAdd, async member => {
-  if (!WELCOME_CHANNEL_ID) return;
-  try {
-    const channel = await member.guild.channels.fetch(WELCOME_CHANNEL_ID);
-    if (!channel?.isTextBased()) return;
-    const welcome = text => embed('🎉 Bagong Member!', text).setThumbnail(member.user.displayAvatarURL({ size: 256 }));
-    const message = await channel.send({ content: `${member}`, embeds: [welcome('👋 ...')] });
-    for (const text of ['👋 Welcome...', '👋 Welcome sa server...']) {
-      await sleep(400);
-      await message.edit({ embeds: [welcome(text)] });
+
+    const channel = member.guild.systemChannel;
+    if (!channel) return;
+
+    const embed = makeEmbed(
+        "🔴 NEW MEMBER DETECTED",
+        Welcome ${member}!\n\n +
+        "You have successfully joined our community.\n" +
+        "Enjoy your stay!",
+        GREEN
+    );
+
+    embed.setThumbnail(member.displayAvatarURL());
+
+    const message = await channel.send({
+        content: "⚡ Initializing welcome sequence...",
+        embeds: [embed]
+    }).catch(console.error);
+
+    if (message) {
+        await sleep(1500);
+
+        await message.edit({
+            content: "🟢 Welcome sequence completed!",
+            embeds: [embed]
+        }).catch(console.error);
     }
-    await sleep(400);
-    await message.edit({ embeds: [welcome(`🥳 Welcome sa **${member.guild.name}**, ${member}!`)] });
-  } catch (err) {
-    console.error('Welcome error:', err.message);
-  }
 });
 
-client.on(Events.Error, err => console.error('Client error:', err));
-process.on('unhandledRejection', err => console.error('Unhandled error:', err));
+// ============================================
+// INTERACTION HANDLER
+// ============================================
 
-client.login(DISCORD_TOKEN).catch(err => {
-  console.error('Hindi maka-login:', err.message);
-  process.exit(1);
+client.on(Events.InteractionCreate, async interaction => {
+
+    // ========================================
+    // DASHBOARD BUTTONS
+    // ========================================
+
+    if (interaction.isButton()) {
+
+        if (interaction.customId === "cart3r_refresh") {
+            const embed = makeEmbed(
+                "🔴 CART3R SYSTEM DASHBOARD",
+                "🟢 SYSTEM ONLINE\n\n" +
+                ⚡ Latency: ${client.ws.ping}ms\n +
+               🌐 Servers: ${client.guilds.cache.size}\n` +
+               👥 Users: ${client.users.cache.size}\n` +
+                "🤖 Status: OPERATIONAL"
+            );
+
+            return interaction.update({
+                embeds: [embed]
+            });
+        }
+
+        if (interaction.customId === "cart3r_commands") {
+            return interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "📚 COMMAND CENTER",
+                        commands.map(c => `\`/${c.name}\``).join(" • ")
+                    )
+                ],
+                ephemeral: true
+            });
+        }
+
+        return;
+    }
+
+    if (!interaction.isChatInputCommand()) return;
+
+    const command = interaction.commandName;
+
+    try {
+
+        // ====================================
+        // PING
+        // ====================================
+
+        if (command === "ping") {
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "⚡ SYSTEM RESPONSE",
+                        `Latency: \`${client.ws.ping}ms\``,
+                        GREEN
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // HELP
+        // ====================================
+
+        else if (command === "help") {
+
+            const embed = makeEmbed(
+                "🤖 CART3R COMMAND DIRECTORY",
+                "Explore the available commands below."
+            );
+
+            embed.addFields(
+                {
+                    name: "📌 GENERAL",
+                    value: "/ping
+/help
+/dashboard
+/animate
+/server
+/userinfo
+/avatar
+/botinfo
+/uptime"
+                },
+                {
+                    name: "🎮 FUN",
+                    value: "/8ball
+/coinflip
+/dice"
+                },
+                {
+                    name: "🌐 COMMUNITY",
+                    value: "/poll
+/say"
+                },
+                {
+                    name: "🛡️ MODERATION",
+                    value: "/kick
+/ban
+/timeout
+/untimeout
+/clear
+/slowmode
+/lock
+/unlock"
+                }
+            );
+
+            await interaction.reply({
+                embeds: [embed]
+            });
+        }
+
+        // ====================================
+        // ANIMATED DASHBOARD
+        // ====================================
+
+        else if (command === "dashboard") {
+
+            await interaction.deferReply();
+
+            const frames = [
+                "🔴 INITIALIZING CART3R...",
+                "🟠 CONNECTING TO SYSTEM...",
+                "🟡 CHECKING SERVER STATUS...",
+                "🟢 ALL SYSTEMS OPERATIONAL."
+            ];
+
+            for (const frame of frames) {
+                await interaction.editReply({
+                    embeds: [
+                        makeEmbed(
+                            "⚙️ SYSTEM INITIALIZATION",
+                            `\`\`\`\n${frame}\n\`\`\``
+                        )
+                    ]
+                });
+
+                await sleep(700);
+            }
+
+            const embed = makeEmbed(
+                "🔴 CART3R COMMAND CENTER",
+                "```ansi\n" +
+                "\u001b[1;31mSYSTEM ONLINE\n" +
+                "\u001b[1;32mALL SYSTEMS OPERATIONAL\n" +
+                "```"
+            );
+
+            embed.addFields(
+                {
+                    name: "🤖 BOT",
+                    value: "ONLINE",
+                    inline: true
+                },
+                {
+                    name: "⚡ LATENCY",
+                    value: ${client.ws.ping}ms,
+                    inline: true
+                },
+                {
+                    name: "🌐 SERVERS",
+                    value: ${client.guilds.cache.size},
+                    inline: true
+                }
+            );
+
+            const buttons = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId("cart3r_refresh")
+                    .setLabel("Refresh")
+                    .setEmoji("🔄")
+                    .setStyle(ButtonStyle.Danger),
+
+                new ButtonBuilder()
+                    .setCustomId("cart3r_commands")
+                    .setLabel("Commands")
+                    .setEmoji("📚")
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+            await interaction.editReply({
+                embeds: [embed],
+                components: [buttons]
+            });
+        }
+
+        // ====================================
+        // ANIMATION TEST
+        // ====================================
+
+        else if (command === "animate") {
+
+            await interaction.deferReply();
+
+            const frames = [
+                "🔴 ░░░░░░░░░░ 0%",
+                "🟠 ███░░░░░░░ 30%",
+                "🟡 ██████░░░░ 60%",
+                "🟢 ██████████ 100%"
+            ];
+
+            for (const frame of frames) {
+                await interaction.editReply({
+                    embeds: [
+                        makeEmbed(
+                            "⚡ CART3R ANIMATION ENGINE",
+                            `\`\`\`\n${frame}\n\`\`\``
+                        )
+                    ]
+                });
+
+                await sleep(900);
+            }
+
+            await interaction.editReply({
+                embeds: [
+                    makeEmbed(
+                        "🟢 ANIMATION COMPLETE",
+                        "All animation frames successfully rendered.",
+                        GREEN
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // SERVER INFORMATION
+        // ====================================
+
+        else if (command === "server") {
+
+            const guild = interaction.guild;
+
+            if (!guild) {
+                return interaction.reply({
+                    content: "Server only command.",
+                    ephemeral: true
+                });
+            }
+
+            const embed = makeEmbed(
+               🌐 ${guild.name}`,
+                "SERVER INFORMATION"
+            );
+
+            embed.addFields(
+                {
+                    name: "Members",
+                    value: ${guild.memberCount},
+                    inline: true
+                },
+                {
+                    name: "Server ID",
+                    value: guild.id,
+                    inline: true
+                },
+                {
+                    name: "Created",
+                    value: <t:${Math.floor(guild.createdTimestamp / 1000)}:D>,
+                    inline: false
+                }
+            );
+
+            if (guild.iconURL()) {
+                embed.setThumbnail(guild.iconURL());
+            }
+
+            await interaction.reply({ embeds: [embed] });
+        }
+
+        // ====================================
+        // USER INFORMATION
+        // ====================================
+
+        else if (command === "userinfo") {
+
+            const user =
+                interaction.options.getUser("member") ||
+                interaction.user;
+
+            const member = interaction.guild
+                ? await interaction.guild.members.fetch(user.id).catch(() => null)
+                : null;
+
+            const embed = makeEmbed(
+               👤 ${user.username}`,
+                `User ID: \`${user.id}\``
+            );
+
+            embed.setThumbnail(user.displayAvatarURL());
+
+            embed.addFields(
+                {
+                    name: "Account Created",
+                    value: <t:${Math.floor(user.createdTimestamp / 1000)}:R>,
+                    inline: true
+                },
+                {
+                    name: "Joined Server",
+                    value: member
+                        ? <t:${Math.floor(member.joinedTimestamp / 1000)}:R>
+                        : "Unknown",
+                    inline: true
+                }
+            );
+
+            await interaction.reply({ embeds: [embed] });
+        }
+
+        // ====================================
+        // AVATAR
+        // ====================================
+
+        else if (command === "avatar") {
+
+            const user =
+                interaction.options.getUser("member") ||
+                interaction.user;
+
+            const embed = makeEmbed(
+               🖼️ ${user.username}'s AVATAR`,
+                "Avatar preview"
+            );
+
+            embed.setImage(
+                user.displayAvatarURL({ size: 1024 })
+            );
+
+            await interaction.reply({ embeds: [embed] });
+        }
+
+        // ====================================
+        // BOT INFORMATION
+        // ====================================
+
+        else if (command === "botinfo") {
+
+            const embed = makeEmbed(
+                "🤖 CART3R BOT INFORMATION",
+                "Advanced Discord development system."
+            );
+
+            embed.addFields(
+                {
+                    name: "Version",
+                    value: "2.0",
+                    inline: true
+                },
+                {
+                    name: "Library",
+                    value: "discord.js v14",
+                    inline: true
+                },
+                {
+                    name: "Servers",
+                    value: ${client.guilds.cache.size},
+                    inline: true
+                },
+                {
+                    name: "Node.js",
+                    value: process.version,
+                    inline: true
+                }
+            );
+
+            await interaction.reply({ embeds: [embed] });
+        }
+
+        // ====================================
+        // UPTIME
+        // ====================================
+
+        else if (command === "uptime") {
+
+            const seconds = Math.floor(client.uptime / 1000);
+
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const remaining = seconds % 60;
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "⏱️ SYSTEM UPTIME",
+                        ${days}d ${hours}h ${minutes}m ${remaining}s,
+                        GREEN
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // MAGIC 8 BALL
+        // ====================================
+
+        else if (command === "8ball") {
+
+            const answers = [
+                "Absolutely yes! 🟢",
+                "Definitely!",
+                "The future looks promising.",
+                "Ask again later.",
+                "Cannot predict right now.",
+                "Probably not.",
+                "The answer is no. 🔴"
+            ];
+
+            const question =
+                interaction.options.getString("question");
+
+            const answer =
+                answers[Math.floor(Math.random() * answers.length)];
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🎱 MAGIC 8 BALL",
+                        **Question:** ${question}\n\n**Answer:** ${answer}
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // COIN FLIP
+        // ====================================
+
+        else if (command === "coinflip") {
+
+            const result =
+                Math.random() < 0.5 ? "HEADS 🪙" : "TAILS 🪙";
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed("🪙 COIN FLIP", Result: **${result}**)
+                ]
+            });
+        }
+
+        // ====================================
+        // DICE
+        // ====================================
+
+        else if (command === "dice") {
+
+            const result = Math.floor(Math.random() * 6) + 1;
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🎲 DICE ROLL",
+                        You rolled a **${result}**!
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // POLL
+        // ====================================
+
+        else if (command === "poll") {
+
+            const question =
+                interaction.options.getString("question");
+
+            const option1 =
+                interaction.options.getString("option1");
+
+            const option2 =
+                interaction.options.getString("option2");
+
+            const embed = makeEmbed(
+                "📊 COMMUNITY POLL",
+               **${question}**\n\n` +
+              🔴 ${option1}\nn` +
+               🟢 ${option2}`
+            );
+
+            const message = await interaction.reply({
+                embeds: [embed],
+                fetchReply: true
+            });
+
+            await message.react("🔴");
+            await message.react("🟢");
+        }
+
+        // ====================================
+        // SAY
+        // ====================================
+
+        else if (command === "say") {
+
+            const message =
+                interaction.options.getString("message");
+
+            await interaction.reply({
+                content: "🟢 Message sent.",
+                ephemeral: true
+            });
+
+            await interaction.channel.send({
+                content: message,
+                allowedMentions: { parse: [] }
+            });
+        }
+
+        // ====================================
+        // KICK
+        // ====================================
+
+        else if (command === "kick") {
+
+            const user =
+                interaction.options.getUser("member");
+
+            const reason =
+                interaction.options.getString("reason") ||
+                "No reason provided";
+
+            const member = await interaction.guild.members
+                .fetch(user.id).catch(() => null);
+
+            if (!member || !member.kickable) {
+                return interaction.reply({
+                    content: "This member cannot be kicked. Check role hierarchy and bot permissions.",
+                    ephemeral: true
+                });
+            }
+
+            await member.kick(reason);
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🔴 MEMBER KICKED",
+                        Member: ${user.tag}\nReason: ${reason}
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // BAN
+        // ====================================
+
+        else if (command === "ban") {
+
+            const user =
+                interaction.options.getUser("member");
+
+            const reason =
+                interaction.options.getString("reason") ||
+                "No reason provided";
+
+            const member = await interaction.guild.members
+                .fetch(user.id).catch(() => null);
+
+            if (member && !member.bannable) {
+                return interaction.reply({
+                    content: "This member cannot be banned. Check role hierarchy and bot permissions.",
+                    ephemeral: true
+                });
+            }
+
+            await interaction.guild.members.ban(user.id, {
+                reason
+            });
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🔴 MEMBER BANNED",
+                        Member: ${user.tag}\nReason: ${reason}
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // TIMEOUT
+        // ====================================
+
+        else if (command === "timeout") {
+
+            const user =
+                interaction.options.getUser("member");
+
+            const minutes =
+                interaction.options.getInteger("minutes");
+
+            const member = await interaction.guild.members
+                .fetch(user.id).catch(() => null);
+
+            if (!member || !member.moderatable) {
+                return interaction.reply({
+                    content: "This member cannot be timed out.",
+                    ephemeral: true
+                });
+            }
+
+            await member.timeout(
+                minutes * 60 * 1000,
+                "Moderator timeout"
+            );
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "⏳ MEMBER TIMED OUT",
+                        ${user.tag} was timed out for ${minutes} minutes.
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // UNTIMEOUT
+        // ====================================
+
+        else if (command === "untimeout") {
+
+            const user =
+                interaction.options.getUser("member");
+
+            const member = await interaction.guild.members
+                .fetch(user.id).catch(() => null);
+
+            if (!member || !member.moderatable) {
+                return interaction.reply({
+                    content: "This member cannot be modified.",
+                    ephemeral: true
+                });
+            }
+
+            await member.timeout(null, "Timeout removed");
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🟢 TIMEOUT REMOVED",
+                        ${user.tag} can now participate again.
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // CLEAR MESSAGES
+        // ====================================
+
+        else if (command === "clear") {
+
+            const amount =
+                interaction.options.getInteger("amount");
+
+            const deleted = await interaction.channel.bulkDelete(
+                amount,
+                true
+            );
+
+            await interaction.reply({
+                content:🧹 Deleted ${deleted.size} recent messages. Older messages may be skipped.`,
+                ephemeral: true
+            });
+        }
+
+        // ====================================
+        // SLOWMODE
+        // ====================================
+
+        else if (command === "slowmode") {
+
+            const seconds =
+                interaction.options.getInteger("seconds");
+
+            await interaction.channel.setRateLimitPerUser(seconds);
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "⏱️ SLOWMODE UPDATED",
+                        Slowmode: **${seconds} seconds**
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // LOCK CHANNEL
+        // ====================================
+
+        else if (command === "lock") {
+
+            await interaction.channel.permissionOverwrites.edit(
+                interaction.guild.roles.everyone,
+                { SendMessages: false }
+            );
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🔒 CHANNEL LOCKED",
+                        "Members can no longer send messages."
+                    )
+                ]
+            });
+        }
+
+        // ====================================
+        // UNLOCK CHANNEL
+        // ====================================
+
+        else if (command === "unlock") {
+
+            await interaction.channel.permissionOverwrites.edit(
+                interaction.guild.roles.everyone,
+                { SendMessages: null }
+            );
+
+            await interaction.reply({
+                embeds: [
+                    makeEmbed(
+                        "🔓 CHANNEL UNLOCKED",
+                        "The default channel permission has been restored."
+                    ),
+                    makeEmbed(
+                        "🟢 CHANNEL STATUS",
+                        "Channel unlocked successfully.",
+                        GREEN
+                    )
+                ]
+            });
+        }
+
+    } catch (error) {
+
+        console.error("COMMAND ERROR:", error);
+
+        const response = {
+            content: "❌ An error occurred. Check bot permissions and try again.",
+            ephemeral: true
+        };
+
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(response).catch(() => {});
+        } else {
+            await interaction.reply(response).catch(() => {});
+        }
+    }
 });
+
+// ============================================
+// GLOBAL ERROR HANDLING
+// ============================================
+
+process.on("unhandledRejection", error => {
+    console.error("Unhandled rejection:", error);
+});
+
+process.on("uncaughtException", error => {
+    console.error("Uncaught exception:", error);
+});
+
+// ============================================
+// LOGIN
+// ============================================
+
+client.login(TOKEN);
